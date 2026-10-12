@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.13.1] - 2026-10-12
+
 ### Fixed
 
 - Honor root attribute overrides when deeply cloning nodes, elements, and templates.
