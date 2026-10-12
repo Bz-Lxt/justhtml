@@ -227,3 +227,36 @@ html
 |   <head>
 |   <body>
 |     <input>
+
+#data
+<!doctype html><svg>&#xFFFD;</svg><frameset><frame>
+#errors
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <svg svg>
+|       "�"
+
+#data
+<!doctype html><svg><![CDATA[�]]></svg><frameset><frame>
+#errors
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <svg svg>
+|       "�"
+
+#data
+<!doctype html><svg>\x00</svg><frameset><frame>
+#errors
+unexpected-null-character
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <frameset>
+|     <frame>

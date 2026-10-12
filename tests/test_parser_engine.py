@@ -37,6 +37,30 @@ class _ParserEngineTestCase(unittest.TestCase):
 
 
 class TestFramesetRecovery(unittest.TestCase):
+    def test_foreign_frameset_eligibility_rejects_non_whitespace_descendants(self) -> None:
+        engine = ParseEngine("", fragment=False, plan=compile_raw_engine_plan(False))
+        engine.parse()
+        foreign = Element("svg", {}, "svg")
+        descendant = Element("g", {}, "svg")
+        descendant.append_child(Text("x"))
+        foreign.append_child(descendant)
+        engine._append(engine._body, foreign)
+        assert not engine._body_allows_frameset(engine._body)
+
+    def test_foreign_replacement_characters_preserve_frameset_state(self) -> None:
+        for content in ("\ufffd", "&#xFFFD;", "<![CDATA[\ufffd]]>"):
+            source = f"<!doctype html><svg>{content}</svg><frameset><frame>"
+            assert not JustHTML(source, sanitize=False).query("frameset")
+            projected = JustHTML(source).to_html(pretty=False)
+            assert "<body>" in projected
+            assert projected == JustHTML(source, transforms=[Sanitize()]).to_html(pretty=False)
+        for content in ("\0", "<![CDATA[\0]]>", " "):
+            source = f"<!doctype html><svg>{content}</svg><frameset><frame>"
+            assert JustHTML(source, sanitize=False).query("frameset")
+            assert JustHTML(source).to_html(pretty=False) == JustHTML(source, transforms=[Sanitize()]).to_html(
+                pretty=False
+            )
+
     def test_html_fragments_retain_projected_rawtext_before_framesets(self) -> None:
         for tag in ("noembed", "noscript", "noframes"):
             source = f"<{tag}>x</{tag}><frameset>"

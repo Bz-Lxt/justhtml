@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Honor root attribute overrides when deeply cloning nodes, elements, and templates.
 - Preserve HTML5 frameset eligibility after ordinary body elements, comments, and raw-text content (#92).
 - Exclude doctypes from element selectors, direct matching, and structural sibling indexing (#93).
+- Keep definition-list items open across intervening special elements such as `search`.
+- Block frameset replacement after literal or character-reference replacement characters in foreign content.
 
 ## [3.13.0] - 2026-09-30
 

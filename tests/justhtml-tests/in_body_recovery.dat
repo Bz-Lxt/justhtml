@@ -255,3 +255,45 @@ expected-doctype-but-got-start-tag
 |   <body>
 |     <span>
 |       <li>
+
+#data
+<!doctype html><dd>a<search><dt>b
+#errors
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <dd>
+|       "a"
+|       <search>
+|         <dt>
+|           "b"
+
+#data
+<!doctype html><dt>a<section><dd>b
+#errors
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <dt>
+|       "a"
+|       <section>
+|         <dd>
+|           "b"
+
+#data
+<!doctype html><dd>a<div><dt>b
+#errors
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <dd>
+|       "a"
+|       <div>
+|     <dt>
+|       "b"

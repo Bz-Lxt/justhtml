@@ -2121,14 +2121,17 @@ class ParseEngine:
                             self._append_comment(html[pos + 3 : comment_end], lt)
                         pos = close + 3
                     continue
-                if (
-                    self._raw_mode
-                    and _scanner.ascii_startswith(html, "<![cdata[", lt, end)
-                    and self._stack[-1].namespace not in {None, "html"}
-                ):
+                if _scanner.ascii_startswith(html, "<![cdata[", lt, end) and self._stack[-1].namespace not in {
+                    None,
+                    "html",
+                }:
                     close = html.find("]]>", pos + 8, end)
                     cdata_end = end if close == -1 else close
-                    self._append_raw_literal_text(html[pos + 8 : cdata_end], pos + 8)
+                    text = html[pos + 8 : cdata_end]
+                    if self._raw_mode:
+                        self._append_raw_literal_text(text, pos + 8)
+                    elif text.strip(_SPACE + "\0"):
+                        self._frameset_blocked = True
                     pos = end if close == -1 else close + 3
                     continue
                 if _scanner.ascii_startswith(html, "<!doctype", lt, end):
@@ -2385,6 +2388,11 @@ class ParseEngine:
                         source_pos += leading
                 self._set_colgroup_mode(False)
         text = raw
+        if parent.namespace not in _OPEN_HTML_NAMESPACES and not self._frameset_blocked:
+            # A null token inserts U+FFFD without clearing frameset-ok; a
+            # literal or character-reference U+FFFD is ordinary character data.
+            if self._clean_text(raw).strip(_SPACE):
+                self._frameset_blocked = True
         if self._has_carriage_return and "\r" in text:
             text = text.replace("\r\n", "\n").replace("\r", "\n")
         if self._has_null and "\0" in text:
@@ -5074,13 +5082,15 @@ class ParseEngine:
                 continue
             break
 
-    def _close_open_li_for_start(self) -> None:
+    def _close_open_item_for_start(self, names: tuple[str, ...]) -> None:
+        if all(self._find_open_index(name) is None for name in names):
+            return
         stack = self._stack
-        for idx in range(len(stack) - 1, 0, -1):
+        for idx in range(len(stack) - 1, 0, -1):  # pragma: no branch - an open item or special boundary ends the scan
             node = stack[idx]
             node_name = getattr(node, "name", None)
-            if node_name == "li":
-                self._generate_implied_end_tags("li")
+            if node_name in names:
+                self._generate_implied_end_tags(node_name)
                 self._mark_active_formatting_dirty()
                 del stack[idx:]
                 return
@@ -5096,12 +5106,11 @@ class ParseEngine:
             self._close_until_before_boundary("p", _P_SCOPE_BOUNDARIES)
 
         if name == "li":
-            self._close_open_li_for_start()
+            self._close_open_item_for_start(("li",))
             return
 
         if name in {"dd", "dt"}:
-            self._close_until_before_boundary("dd", _DEFINITION_SCOPE_BOUNDARIES)
-            self._close_until_before_boundary("dt", _DEFINITION_SCOPE_BOUNDARIES)
+            self._close_open_item_for_start(("dd", "dt"))
             return
 
         if name == "option":
@@ -5547,6 +5556,8 @@ class ParseEngine:
         return pos
 
     def _append_raw_literal_text(self, text: str, source_pos: int | None = None) -> None:
+        if self._current_parent().namespace not in _OPEN_HTML_NAMESPACES and text.strip(_SPACE + "\0"):
+            self._frameset_blocked = True
         if self._has_carriage_return and "\r" in text:
             text = text.replace("\r\n", "\n").replace("\r", "\n")
         if self._has_null and "\0" in text:
