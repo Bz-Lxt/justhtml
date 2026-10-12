@@ -158,6 +158,32 @@ class TestUniversalSelector(SelectorTestCase):
         assert len(result) == 2
         assert all("container" in (n.attrs.get("class") or "") for n in result)
 
+    def test_universal_selector_skips_doctype(self):
+        doc = JustHTML("<!doctype html><p>x")
+        assert [n.name for n in doc.query("*")] == ["html", "head", "body", "p"]
+        assert [n.name for n in doc.query(":not(p)")] == ["html", "head", "body"]
+
+    def test_doctype_is_not_an_element_for_structural_pseudos(self):
+        doc = JustHTML("<!doctype html><p>x")
+        assert [n.name for n in doc.query(":root")] == ["html"]
+        assert [n.name for n in doc.query(":empty")] == ["head"]
+        assert [n.name for n in doc.query(":first-child")] == ["html", "head", "p"]
+        assert [n.name for n in doc.query("html:nth-child(1):last-child:only-child")] == ["html"]
+        assert not doc.query("html:nth-child(2)")
+        assert not doc.query("* + html")
+        assert not doc.query(":not(p) ~ html")
+
+    def test_matches_rejects_doctype_node(self):
+        doctype = JustHTML("<!doctype html><p>x").root.children[0]
+        assert doctype.name == "!doctype"
+        for selector in ("*", ":not(*)", ":root", ":empty", ":not(p)", ":not(:not(*))", ":comment"):
+            assert not matches(doctype, selector)
+
+    def test_doctype_exclusion_preserves_comment_selectors(self):
+        doc = JustHTML("<!doctype html><!--x--><p>text<!--y-->")
+        assert [n.name for n in doc.query("*, :comment")] == ["#comment", "html", "head", "body", "p", "#comment"]
+        assert [n.data for n in doc.query(":comment")] == ["x", "y"]
+
 
 class TestIdSelector(SelectorTestCase):
     """Test ID selectors."""
@@ -1574,6 +1600,9 @@ class TestAdditionalCoverage(SelectorTestCase):
         first_li = query(doc, "li")[0]
 
         assert matcher._get_previous_sibling(first_li) is None
+
+        document = JustHTML("<!doctype html><p>x")
+        assert matcher._get_previous_sibling(document.query("html")[0]) is None
 
     def test_get_previous_sibling_detached_node(self):
         # Test with a node that's been detached from its parent's children list

@@ -2193,6 +2193,10 @@ class TestTransforms(unittest.TestCase):
         )
         assert doc.to_html(pretty=False) == "<p><img></p>"
 
+    def test_pruneempty_does_not_select_doctypes(self) -> None:
+        doc = JustHTML("<!doctype html><p>x", transforms=[PruneEmpty(":not(*)")])
+        assert doc.to_html(pretty=False) == "<!DOCTYPE html><html><head></head><body><p>x</p></body></html>"
+
     def test_pruneempty_is_recursive_post_order(self) -> None:
         doc = JustHTML(
             "<div><p></p></div>",
