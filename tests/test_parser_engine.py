@@ -3,7 +3,7 @@ import unittest
 from collections import Counter
 from dataclasses import replace
 
-from justhtml import JustHTML
+from justhtml import JustHTML, Sanitize
 from justhtml.dom import DocumentFragment, Element, Template, Text
 from justhtml.parser.context import FragmentContext
 from justhtml.parser.engine import (
@@ -34,6 +34,70 @@ class _ParserEngineTestCase(unittest.TestCase):
         document = JustHTML(html, **kwargs)
         assert document.to_html(pretty=False) == expected
         return document
+
+
+class TestFramesetRecovery(unittest.TestCase):
+    def test_html_fragments_retain_projected_rawtext_before_framesets(self) -> None:
+        for tag in ("noembed", "noscript", "noframes"):
+            source = f"<{tag}>x</{tag}><frameset>"
+            context = FragmentContext("html")
+            projected = JustHTML(source, fragment_context=context).to_html(pretty=False)
+            assert projected == "x"
+            assert projected == JustHTML(source, fragment_context=context, transforms=[Sanitize()]).to_html(
+                pretty=False
+            )
+
+    def test_frameset_eligibility_agrees_across_sanitization_paths(self) -> None:
+        prefixes = (
+            "<span>",
+            "<abbr>",
+            "<section><h1>",
+            "<custom-element>",
+            "<div><!--comment-->",
+            "<div><style>x</style>",
+            "<div><title>x</title>",
+            "<div><noembed>x</noembed>",
+            "<div><noembed>x</noembed> ",
+            "<div><noembed>x</noembed><noembed>y</noembed>",
+            "<div><noscript>x</noscript>",
+            "<div><noframes>x</noframes>",
+            "<span><input type=hidden>",
+            "<noframes>x</noframes><noframes>y</noframes>",
+        )
+        for prefix in prefixes:
+            with self.subTest(prefix=prefix):
+                source = prefix + "<frameset>"
+                assert len(JustHTML(source, sanitize=False).query("frameset")) == 1
+                projected = JustHTML(source).to_html(pretty=False)
+                assert projected == JustHTML(source, transforms=[Sanitize()]).to_html(pretty=False)
+                assert "<body>" not in projected
+
+    def test_frameset_blockers_survive_text_projection(self) -> None:
+        prefixes = (
+            "<div>x<noembed>y</noembed>",
+            "<div><noembed>x</noembed>y",
+            "<div><noembed>x</noembed>y<noembed>z</noembed>",
+            "<span><li>",
+            "<span><pre>",
+            "<span><br>",
+            "<span><hr>",
+            "<span><img>",
+            "<span><table></table>",
+            "<span><template></template>",
+            "<span><input>",
+        )
+        for prefix in prefixes:
+            with self.subTest(prefix=prefix):
+                source = prefix + "<frameset>"
+                assert not JustHTML(source, sanitize=False).query("frameset")
+                projected = JustHTML(source).to_html(pretty=False)
+                assert projected == JustHTML(source, transforms=[Sanitize()]).to_html(pretty=False)
+                assert "<body>" in projected
+        source = "<div><noscript>x</noscript><frameset>"
+        assert not JustHTML(source, sanitize=False, scripting_enabled=False).query("frameset")
+        assert JustHTML(source, scripting_enabled=False).to_html(pretty=False) == JustHTML(
+            source, scripting_enabled=False, transforms=[Sanitize()]
+        ).to_html(pretty=False)
 
 
 class TestDocumentShellScaling(unittest.TestCase):

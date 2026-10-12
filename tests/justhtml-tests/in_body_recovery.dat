@@ -97,8 +97,7 @@
 #document
 | <html>
 |   <head>
-|   <body>
-|     <f>
+|   <frameset>
 
 #data
 <div><b>x</div><span>y</span><svg>z</svg>
@@ -173,3 +172,86 @@
 |           <ul>
 |       <iframe>
 |         "x"
+
+#data
+<span><frameset>
+#errors
+expected-doctype-but-got-start-tag
+#document
+| <html>
+|   <head>
+|   <frameset>
+
+#data
+<abbr><frameset>
+#errors
+expected-doctype-but-got-start-tag
+#document
+| <html>
+|   <head>
+|   <frameset>
+
+#data
+<section><h1><frameset>
+#errors
+expected-doctype-but-got-start-tag
+#document
+| <html>
+|   <head>
+|   <frameset>
+
+#data
+<custom-element><frameset>
+#errors
+expected-doctype-but-got-start-tag
+#document
+| <html>
+|   <head>
+|   <frameset>
+
+#data
+<div><!--comment--><frameset>
+#errors
+expected-doctype-but-got-start-tag
+#document
+| <html>
+|   <head>
+|   <frameset>
+
+#data
+<div><style>x</style><frameset>
+#errors
+expected-doctype-but-got-start-tag
+#document
+| <html>
+|   <head>
+|   <frameset>
+
+#data
+<div><title>x</title><frameset>
+#errors
+expected-doctype-but-got-start-tag
+#document
+| <html>
+|   <head>
+|   <frameset>
+
+#data
+<div><noembed>x</noembed><frameset>
+#errors
+expected-doctype-but-got-start-tag
+#document
+| <html>
+|   <head>
+|   <frameset>
+
+#data
+<span><li><frameset>
+#errors
+expected-doctype-but-got-start-tag
+#document
+| <html>
+|   <head>
+|   <body>
+|     <span>
+|       <li>
