@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.14.0] - 2026-10-22
+
 ### Fixed
 
 - Ignore NUL after a less-than sign in HTML text and in CDATA at HTML/MathML integration points, while preserving foreign-text and RAWTEXT replacement rules.
