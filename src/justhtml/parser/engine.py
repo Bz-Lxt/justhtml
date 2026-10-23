@@ -3137,6 +3137,10 @@ class ParseEngine:
         if name == "image":
             name = "img"
             action = self._tag_actions.get(name, _UNKNOWN_TAG_ACTION)
+        if name in _INLINE_HEAD_VOID_START_TAGS:
+            # Metadata tokens must update head state even when their elements
+            # are removed by the compiled sanitization policy.
+            return self._parse_start_tag(name_start, end)
         if self._foreign_context_seen:
             namespace = self._stack[-1].namespace
             if namespace is not None and namespace != "html" and namespace != _PARSER_ONLY_NAMESPACE:
@@ -3756,7 +3760,7 @@ class ParseEngine:
         ):
             if (
                 action is not None
-                and allowed
+                and (allowed or name in _HTML_VOID_ELEMENTS)
                 and action.head_content
                 # "after head" re-enters the head only for the metadata start
                 # tags it lists; noscript is not among them and starts the body.
@@ -4047,7 +4051,7 @@ class ParseEngine:
         parent: Node
         if (
             action is not None
-            and allowed
+            and (allowed or name in _HTML_VOID_ELEMENTS)
             and action.head_content
             and not self._fragment
             and self._head is not None
@@ -4057,6 +4061,10 @@ class ParseEngine:
             and not self._body_has_content()
         ):
             parent = self._head
+            if name in _HTML_VOID_ELEMENTS and self._current_parent() is not self._head and self._html is not None:
+                # The "before head" rule opens the head before processing a
+                # metadata token, even when sanitization removes the element.
+                self._stack = _CountingStack([self._doc, self._html, self._head])
         elif not html_text_parsing and not self._is_foreign_breakout_start(name, attrs):
             # A non-breakout start tag inside foreign content is inserted as a
             # foreign element in the current namespace; the HTML in-body repair
@@ -4126,6 +4134,7 @@ class ParseEngine:
                 name == "menuitem" and self._active_formatting_dirty
             ):  # pragma: no branch - opposite edge requires invalid parser state
                 self._reconstruct_active_formatting()  # pragma: no cover - unreachable after parser-state guards
+            self._finish_head_reentry()
             return pos
 
         if (
