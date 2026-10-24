@@ -88,6 +88,25 @@ class TestStream(unittest.TestCase):
         ]
         assert events == expected
 
+    def test_script_comment_transitions_preserve_following_content(self):
+        for text in ("<!--x-->" * 1000, "<!--x-->" * 1000 + "<!--<script>x</script>-->"):
+            source = f"<script>{text}</script><p>safe</p>"
+            assert list(stream(source)) == [
+                ("start", ("script", {})),
+                ("text", text),
+                ("end", "script"),
+                ("start", ("p", {})),
+                ("text", "safe"),
+                ("end", "p"),
+            ]
+
+    def test_script_comment_transitions_scale_linearly(self):
+        for suffix in ("", "<!--<script>x</script>-->"):
+            assert_scales_linearly(
+                lambda size, suffix=suffix: "<script>" + "<!--x-->" * size + suffix + "</script>",
+                lambda source: list(stream(source)),
+            )
+
     def test_ascii_lower_preserves_full_document_search_offsets_and_ascii_markers(self):
         # The parser searches this folded full-document copy for ASCII markup
         # markers, then reuses the match offsets against the original string.

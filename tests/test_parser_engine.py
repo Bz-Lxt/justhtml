@@ -162,6 +162,15 @@ class TestForeignContentScaling(unittest.TestCase):
 
 
 class TestSanitizerScaling(unittest.TestCase):
+    def test_script_comment_transitions_scale_linearly(self) -> None:
+        for options in ({}, {"transforms": [Sanitize()]}, {"sanitize": False}):
+            assert_scales_linearly(
+                lambda size: "<script>" + "<!--x-->" * size + "</script><p>safe</p>",
+                lambda source, options=options: JustHTML(source, **options),
+            )
+            source = "<script>" + "<!--x-->" * 1000 + "</script><p>safe</p>"
+            assert JustHTML(source, **options).query_one("p").to_text() == "safe"
+
     def test_nested_disallowed_wrappers_scale_linearly(self) -> None:
         assert_scales_linearly(
             lambda size: "<section>x" * size,

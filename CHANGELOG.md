@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Keep script scanning linear across repeated HTML comment markers, including with default sanitization and the event stream API.
+
 ### Fixed
 
 - Keep whitespace after a `<base>`, `<link>` or `<meta>` that implies the `<head>` in the head, including when sanitization removes the metadata element.

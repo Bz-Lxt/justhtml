@@ -113,11 +113,17 @@ def find_script_end_tag(html: str, pos: int, end: int) -> tuple[int | None, int]
     search = pos
     escaped = False
     double_escaped = False
+    close: int | None = None
+    next_script_start: int | None = None
 
     while True:
-        close, next_pos = find_rawtext_end_tag(html, "script", search, end)
-        if close is None:
-            return None, end
+        # Comment transitions must reuse lookahead rather than rescan the
+        # remaining script for the same distant end tag and start marker.
+        if close is None or search > close:
+            close, next_pos = find_rawtext_end_tag(html, "script", search, end)
+            if close is None:
+                return None, end
+            next_script_start = None
         if not escaped:
             comment_start = html.find("<!--", search, close)
             if comment_start == -1 or close < comment_start:
@@ -130,7 +136,11 @@ def find_script_end_tag(html: str, pos: int, end: int) -> tuple[int | None, int]
             search = comment_start + 2
             continue
 
-        script_start = find_script_start_marker(html, search, close, end) if not double_escaped else -1
+        script_start = -1
+        if not double_escaped:
+            if next_script_start is None or (next_script_start != -1 and next_script_start < search):
+                next_script_start = find_script_start_marker(html, search, close, end)
+            script_start = next_script_start
         comment_end = html.find("-->", search, close)
         if (
             comment_end != -1
