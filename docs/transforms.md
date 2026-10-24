@@ -558,6 +558,12 @@ Keeps only allowlisted attributes.
 `allowed_attributes` is a mapping like:
 
 - `{"*": {"id", "class"}, "a": {"href", "rel"}}`
+- `{"p": {"id": {Regex(r"note-[0-9]+")}, "dir": {"ltr", "rtl"}}}`
+
+The mapping form restricts whole attribute values using literal strings and
+`Regex(...)` rules, with the same [attribute value semantics](html-cleaning.md#restrict-attribute-values)
+as `SanitizationPolicy`. `AllowlistAttrs` alone does not validate URLs or CSS;
+use `Sanitize` for the complete sanitizer pipeline.
 
 If provided, `callback(node)` / `report(msg, node=...)` is called when an attribute is dropped for not being allowlisted.
 

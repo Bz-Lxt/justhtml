@@ -113,6 +113,57 @@ The three settings work together:
 
 For URL schemes, hosts, proxies, `srcset`, and other URL-specific controls, continue with [URL Cleaning](url-cleaning.md).
 
+### Restrict attribute values
+
+For each tag in `allowed_attributes`, use a set of attribute names for the normal
+sanitizer checks, or a mapping to sets of permitted literal values and
+`Regex(...)` whole-value patterns:
+
+```python
+from justhtml import JustHTML, Regex, SanitizationPolicy
+
+policy = SanitizationPolicy(
+    allowed_tags={"p", "a"},
+    allowed_attributes={
+        "p": {
+            "id": {Regex(r"note-[0-9]+")},
+            "dir": {"ltr", "rtl", "auto"},
+        },
+        "a": {"title"},
+    },
+)
+print(JustHTML(
+    '<p id="note-42" dir="sideways" title="example">Hello</p>',
+    fragment=True,
+    policy=policy,
+).to_html())
+```
+
+<!-- justhtml: output -->
+
+```html
+<p id="note-42">Hello</p>
+```
+
+Plain strings match exactly, including case and whitespace. Patterns match the
+entire attribute value, including an entire `class` list rather than individual
+tokens. HTML character references are decoded before matching, and the policy's
+invisible-Unicode stripping runs first when enabled. Attribute values are not
+trimmed. An empty rule set permits no values; `{""}` permits an empty or valueless
+attribute. Attributes remain optional.
+
+Global (`"*"`) and tag-specific permissions are additive. If both constrain an
+attribute, their permitted values are combined. A name-only permission in either
+scope permits any value through the normal checks; an empty set in the other
+scope does not revoke it. Avoid listing an attribute globally without constraints
+if you intend to restrict its values on a particular tag.
+
+Matching does not bypass URL validation or inline-style sanitization. These
+checks may subsequently remove or rewrite accepted values. `force_link_rel` may
+also add tokens after value matching. Output still uses normal HTML escaping.
+Regex patterns are trusted application configuration and have the same
+[backtracking considerations as CSS value patterns](#restrict-css-values).
+
 ## Sanitizing the in-memory DOM
 
 The parsed DOM is sanitized by default at construction time (`JustHTML(..., sanitize=True)`), and serialization is a pure output step.

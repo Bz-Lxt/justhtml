@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Collection, Mapping
-from dataclasses import dataclass, field
 
 from justhtml.core.constants import HTML_SPACE_CHARACTERS
 
@@ -19,18 +17,7 @@ from .url import (
     _effective_url_handling,
     _sanitize_url_value_with_rule,
 )
-
-
-@dataclass(frozen=True, slots=True)
-class Regex:
-    """A trusted whole-value regular expression in a CSS property allowlist."""
-
-    pattern: str
-    _compiled: re.Pattern[str] = field(init=False, repr=False, compare=False)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "_compiled", re.compile(self.pattern))
-
+from .values import Regex, _matches_value_rules, _value_rules_signature
 
 _CssProperties = Collection[str] | Mapping[str, Collection[str | Regex]]
 
@@ -50,10 +37,7 @@ def _normalize_css_properties(properties: _CssProperties) -> _CssProperties:
 def _css_properties_signature(properties: _CssProperties) -> tuple[object, ...]:
     if not isinstance(properties, Mapping):
         return tuple(sorted(str(prop).lower() for prop in properties))
-    return tuple(
-        (prop, tuple(sorted(("regex", v.pattern) if isinstance(v, Regex) else ("literal", v) for v in values)))
-        for prop, values in sorted(properties.items())
-    )
+    return tuple((prop, _value_rules_signature(values)) for prop, values in sorted(properties.items()))
 
 
 def _css_value_is_structurally_safe(value: str) -> bool:
@@ -342,10 +326,7 @@ def _sanitize_inline_style(
         if value_rules is not None:
             if not _css_value_is_structurally_safe(prop_value):
                 continue
-            if not any(
-                rule._compiled.fullmatch(prop_value) is not None if isinstance(rule, Regex) else prop_value == rule
-                for rule in value_rules
-            ):
+            if not _matches_value_rules(value_rules, prop_value):
                 continue
 
         if prop_value.lower() in {"inherit", "revert", "revert-layer", "unset"}:

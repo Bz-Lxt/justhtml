@@ -504,6 +504,7 @@ Notable options:
 - `unsafe_handling`: "strip" (default), "raise", or "collect"
 - `disallowed_tag_handling`: "unwrap" (default), "escape", or "drop"
 - `strip_invisible_unicode`: `True` by default; strips invisible Unicode commonly abused for obfuscation, including variation selectors, zero-width/bidi controls, and private-use characters
+- `allowed_attributes`: maps tags to collections of attribute names or mappings from attribute names to sets of literal strings and `Regex(pattern)` whole-value rules; see [attribute value rules](html-cleaning.md#restrict-attribute-values)
 - `allowed_css_properties`: a collection of property names using normal CSS checks, or a mapping from property names to sets of literal strings and `Regex(pattern)` whole-value rules; see [CSS value rules](html-cleaning.md#restrict-css-values)
 - `url_policy`: controls URL validation and URL handling ("allow", "strip", or "proxy")
 - `selector_limits`: resource limits used when parsing and matching selectors in sanitization transform pipelines

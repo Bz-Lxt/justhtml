@@ -6,12 +6,15 @@ representation consumed by the runtime walker in ``transforms.py``.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from justhtml.core.constants import HTML_SPACE_CHARACTERS
-from justhtml.sanitizer import DEFAULT_POLICY, SanitizationPolicy, UrlPolicy, _sanitize_inline_style
+from justhtml.sanitizer import DEFAULT_POLICY, Regex, SanitizationPolicy, UrlPolicy, _sanitize_inline_style
+from justhtml.sanitizer.attributes import _attribute_rules_with_values, _merge_attribute_value_rules
 from justhtml.sanitizer.rawtext import _RAWTEXT_SERIALIZATION_ELEMENTS
 from justhtml.sanitizer.url import _URL_SINK_ATTRS, _sanitize_url_sink_value, _url_sink_kind_for_attr
+from justhtml.sanitizer.values import _matches_value_rules
 from justhtml.selector import DEFAULT_SELECTOR_LIMITS, SelectorLimits, parse_selector
 
 from . import (
@@ -72,6 +75,7 @@ if TYPE_CHECKING:
 
     from justhtml.dom import Node
     from justhtml.sanitizer.css import _CssProperties
+    from justhtml.sanitizer.values import _ValueRules
     from justhtml.selector import ParsedSelector
 
     class NodeCallback(Protocol):
@@ -347,12 +351,14 @@ def _compile_sanitize_transform(t: Sanitize) -> list[CompiledTransform]:
     effective_allowed_attrs = policy.allowed_attributes
     if policy.force_link_rel:
         new_allowed = dict(policy.allowed_attributes)
-        a_attrs = set(new_allowed.get("a", []))
+        a_attrs = new_allowed.get("a", set())
         global_attrs = set(new_allowed.get("*", []))
 
         if "rel" not in a_attrs and "rel" not in global_attrs:
-            a_attrs.add("rel")
-            new_allowed["a"] = a_attrs
+            if isinstance(a_attrs, Mapping):
+                new_allowed["a"] = {**a_attrs, "rel": {Regex(r"[\s\S]*")}}
+            else:
+                new_allowed["a"] = {*a_attrs, "rel"}
             effective_allowed_attrs = new_allowed
 
     compiled.append(
@@ -737,17 +743,17 @@ def _compile_allowlist_attrs_transform(
     allowed_attributes = t.allowed_attributes
     on_hook = t.callback
     on_report = t.report
-    allowed_global = allowed_attributes.get("*", set())
-    allowed_by_tag: dict[str, set[str]] = {}
+    allowed_global = _attribute_rules_with_values(allowed_attributes.get("*", set()))
+    allowed_by_tag: dict[str, dict[str, _ValueRules | None]] = {}
     for tag, attrs in allowed_attributes.items():
         if tag == "*":
             continue
-        allowed_by_tag[str(tag).lower()] = set(allowed_global).union(attrs)
+        allowed_by_tag[str(tag).lower()] = _merge_attribute_value_rules(allowed_global, attrs)
 
     def _allowlist_attrs(
         node: Node,
-        allowed_by_tag: dict[str, set[str]] = allowed_by_tag,
-        allowed_global: set[str] = allowed_global,
+        allowed_by_tag: dict[str, dict[str, _ValueRules | None]] = allowed_by_tag,
+        allowed_global: dict[str, _ValueRules | None] = allowed_global,
         on_hook: NodeCallback | None = on_hook,
         on_report: ReportCallback | None = on_report,
     ) -> dict[str, str | None] | None:
@@ -770,6 +776,9 @@ def _compile_allowlist_attrs_transform(
                 break
             if not key or key not in allowed:
                 break
+            rules = allowed[key]
+            if rules is not None and not _matches_value_rules(rules, attrs[key] or ""):
+                break
         else:
             return None
 
@@ -783,15 +792,19 @@ def _compile_allowlist_attrs_transform(
                 continue
             key = raw_key_str
             if key in allowed:
-                out[key] = value
-                continue
+                rules = allowed[key]
+                if rules is None or _matches_value_rules(rules, value or ""):
+                    out[key] = value
+                    continue
 
             if not key.islower():
                 lowered = key.lower()
                 if lowered in allowed:
-                    out[lowered] = value
-                    changed = True
-                    continue
+                    rules = allowed[lowered]
+                    if rules is None or _matches_value_rules(rules, value or ""):
+                        out[lowered] = value
+                        changed = True
+                        continue
                 key = lowered
 
             changed = True

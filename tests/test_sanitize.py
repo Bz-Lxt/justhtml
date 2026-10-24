@@ -5,7 +5,7 @@ import unittest
 from dataclasses import replace
 
 import justhtml
-from justhtml import AllowStyleAttrs, JustHTML, Regex, Sanitize, SetAttrs
+from justhtml import AllowlistAttrs, AllowStyleAttrs, JustHTML, Regex, Sanitize, SetAttrs
 from justhtml.core.types import ParseError
 from justhtml.dom import Comment, DocumentFragment, Element, Node, Template, Text
 from justhtml.sanitizer import (
@@ -1566,6 +1566,171 @@ class TestSanitizeDom(unittest.TestCase):
             )
             is None
         )
+
+    def test_attribute_value_rules_across_entry_points(self) -> None:
+        policy = SanitizationPolicy(
+            allowed_tags={"p"},
+            allowed_attributes={"p": {"id": {Regex(r"note-[0-9]+")}, "dir": {"ltr", "rtl"}, "title": {""}}},
+        )
+        for source, output in [
+            ('<p id="note-42" dir="rtl" title="">x</p>', '<p id="note-42" dir="rtl" title>x</p>'),
+            ('<p id="note-42extra" dir="RTL" title="x">x</p>', "<p>x</p>"),
+            ('<p id=" note-42 " dir="auto">x</p>', "<p>x</p>"),
+            ('<p id="note-&#52;2" dir="ltr">x</p>', '<p id="note-42" dir="ltr">x</p>'),
+            ('<p id="note-\uff14\uff12">x</p>', "<p>x</p>"),
+            ("<p title>x</p>", "<p title>x</p>"),
+            ('<p id="note-4\u200b2">x</p>', '<p id="note-42">x</p>'),
+        ]:
+            with self.subTest(source=source):
+                assert JustHTML(source, fragment=True, policy=policy).to_html() == output
+                assert JustHTML(source, fragment=True, transforms=[Sanitize(policy=policy)]).to_html() == output
+                tree = JustHTML(source, fragment=True, sanitize=False).root
+                sanitize_dom(tree, policy=policy)
+                assert tree.to_html() == output
+                assert (
+                    JustHTML(
+                        source,
+                        fragment=True,
+                        sanitize=False,
+                        transforms=[Sanitize(policy=policy)],
+                    ).to_html()
+                    == output
+                )
+        assert (
+            JustHTML(
+                '<p id="note-42" dir="bad">x</p>',
+                sanitize=False,
+                fragment=True,
+                transforms=[AllowlistAttrs("*", allowed_attributes=policy.allowed_attributes)],
+            ).to_html()
+            == '<p id="note-42">x</p>'
+        )
+
+    def test_attribute_value_rules_global_and_tag_permissions_are_additive(self) -> None:
+        policy = SanitizationPolicy(
+            allowed_tags={"p", "div", "span"},
+            allowed_attributes={
+                "*": {"id": {"global"}, "title": {"global"}, "dir": {"rtl"}},
+                "p": {"id": {"local"}, "title": set(), "lang": {"sv"}},
+                "div": {"id", "title"},
+            },
+        )
+        assert JustHTML(
+            '<p id="local" title="global" lang="sv" dir="ltr">x</p>'
+            '<div id="anything" title="anything" dir="rtl">y</div>'
+            '<span id="global" title="other">z</span>',
+            fragment=True,
+            policy=policy,
+        ).to_html() == (
+            '<p id="local" title="global" lang="sv">x</p>\n'
+            '<div id="anything" title="anything" dir="rtl">y</div>\n'
+            '<span id="global">z</span>'
+        )
+        policy = SanitizationPolicy(
+            allowed_tags={"p"},
+            allowed_attributes={"*": {"id"}, "p": {"id": set(), "title": set()}},
+        )
+        assert (
+            JustHTML('<p id="anything" title="x">x</p>', fragment=True, policy=policy).to_html()
+            == '<p id="anything">x</p>'
+        )
+
+    def test_attribute_value_rules_do_not_bypass_url_or_style_checks(self) -> None:
+        policy = SanitizationPolicy(
+            allowed_tags={"a"},
+            allowed_attributes={"a": {"href": {Regex(r".*")}, "style": {Regex(r".*")}}},
+            allowed_css_properties={"color"},
+            url_policy=UrlPolicy(
+                allow_rules={
+                    ("a", "href"): UrlRule(allowed_schemes={"https"}, allowed_hosts={"good.test"}),
+                }
+            ),
+        )
+        assert (
+            JustHTML(
+                '<a href="javascript:alert(1)" style="color: var(--x)">x</a>',
+                fragment=True,
+                policy=policy,
+            ).to_html()
+            == "<a>x</a>"
+        )
+        assert (
+            JustHTML(
+                '<a href="https://bad.test/" style="color: red; position: fixed">x</a>',
+                fragment=True,
+                policy=policy,
+            ).to_html()
+            == '<a style="color: red">x</a>'
+        )
+        assert (
+            JustHTML(
+                '<a href="https://good.test/">x</a>',
+                fragment=True,
+                policy=policy,
+            ).to_html()
+            == '<a href="https://good.test/">x</a>'
+        )
+
+    def test_attribute_value_rules_normalization_and_cache(self) -> None:
+        values = {"one", Regex("two")}
+        policy = SanitizationPolicy(
+            allowed_tags={"p"},
+            allowed_attributes={" P ": {" ID ": values, "id": {"three"}, " ": {"x"}}, "p": {"id": {"four"}}},
+        )
+        values.clear()
+        for value in ["one", "two", "three", "four"]:
+            source = f'<p id="{value}">x</p>'
+            assert JustHTML(source, fragment=True, policy=policy).to_html() == source
+        source = '<p id="one">x</p>'
+        policy.allowed_attributes["p"]["id"] = {Regex("other")}
+        assert JustHTML(source, fragment=True, policy=policy).to_html() == "<p>x</p>"
+        policy.allowed_attributes["p"]["id"] = {"one"}
+        assert JustHTML(source, fragment=True, policy=policy).to_html() == source
+        policy.allowed_attributes["p"]["id"] = set()
+        assert JustHTML(source, fragment=True, policy=policy).to_html() == "<p>x</p>"
+
+    def test_attribute_value_rules_on_mixed_case_dom_attributes(self) -> None:
+        policy = SanitizationPolicy(
+            allowed_tags={"p"},
+            allowed_attributes={"p": {"id": {"allowed"}}},
+        )
+        for value in ["allowed", "other"]:
+            root = DocumentFragment()
+            root.append_child(Element("p", namespace="html", attrs={"ID": value}))
+            sanitize_dom(root, policy=policy)
+            assert root.children[0].attrs == ({"id": value} if value == "allowed" else {})
+
+    def test_attribute_value_rules_report_and_raise(self) -> None:
+        policy = SanitizationPolicy(
+            allowed_tags={"p"},
+            allowed_attributes={"p": {"id": {"allowed"}}},
+            unsafe_handling="collect",
+        )
+        doc = JustHTML('<p id="other">x</p>', policy=policy, fragment=True, collect_errors=True)
+        assert doc.to_html() == "<p>x</p>"
+        assert any(e.category == "security" for e in doc.errors)
+        with self.assertRaises(justhtml.UnsafeHtmlError):
+            JustHTML('<p id="other">x</p>', policy=replace(policy, unsafe_handling="raise"), fragment=True)
+
+    def test_attribute_value_rules_with_forced_link_rel(self) -> None:
+        policy = SanitizationPolicy(
+            allowed_tags={"a"},
+            allowed_attributes={"a": {"title": {"ok"}}},
+            force_link_rel={"noopener"},
+        )
+        assert JustHTML('<a title="bad" rel="nofollow">x</a>', policy=policy, fragment=True).to_html() == (
+            '<a rel="nofollow noopener">x</a>'
+        )
+
+    def test_attribute_value_rule_configuration_errors(self) -> None:
+        for attrs in [
+            {"p": {"id": "literal"}},
+            {"p": {"id": {1}}},
+            {"P": {"id"}, "p": {"id": {"one"}}},
+            {"P": {"id": {"one"}}, "p": {"id"}},
+        ]:
+            with self.subTest(attrs=attrs), self.assertRaises(TypeError):
+                SanitizationPolicy(allowed_tags={"p"}, allowed_attributes=attrs)
 
     def test_css_value_rules_across_sanitizer_entry_points(self) -> None:
         policy = SanitizationPolicy(

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 from justhtml.core.types import ParseError
 from justhtml.selector import DEFAULT_SELECTOR_LIMITS, SelectorLimits
 
+from .attributes import _allowed_attributes_signature, _AllowedAttributes, _normalize_allowed_attributes
 from .css import _css_properties_signature, _CssProperties, _normalize_css_properties
 from .url import (
     DisallowedTagHandling,
@@ -141,20 +142,21 @@ class SanitizationPolicy:
     - Tags not in `allowed_tags` are disallowed.
     - Attributes not in `allowed_attributes[tag]` (or `allowed_attributes["*"]`)
       are disallowed.
-    - URL scheme checks apply to attributes listed in `url_attributes`.
+    - Attribute mappings constrain whole values with literals or `Regex` rules.
+    - URL-valued attributes also undergo `url_policy` checks.
 
     All tag and attribute names are expected to be ASCII-lowercase.
     """
 
     allowed_tags: frozenset[str]
-    allowed_attributes: Mapping[str, Collection[str]]
+    allowed_attributes: _AllowedAttributes
 
     if TYPE_CHECKING:
 
         def __init__(
             self,
             allowed_tags: Collection[str],
-            allowed_attributes: Mapping[str, Collection[str]],
+            allowed_attributes: _AllowedAttributes,
             url_policy: UrlPolicy = ...,
             drop_comments: bool = True,
             drop_doctype: bool = True,
@@ -258,31 +260,9 @@ class SanitizationPolicy:
                 "SanitizationPolicy.allowed_attributes must be a mapping like {'*': ['id'], 'a': ['href']}"
             )
 
-        for tag, attrs in self.allowed_attributes.items():
-            if isinstance(attrs, str):
-                raise TypeError(
-                    "SanitizationPolicy.allowed_attributes values must be collections of attribute names "
-                    f"(e.g. {{'{tag}': ['class', 'id']}}), not a string"
-                )
-
         normalized_tags = frozenset(_normalize_policy_name_set(self.allowed_tags))
         object.__setattr__(self, "allowed_tags", normalized_tags)
-
-        normalized_attrs: dict[str, set[str]] = {}
-        for tag, attrs in self.allowed_attributes.items():
-            tag_name = _normalize_policy_name(tag)
-            if not tag_name:
-                raise ValueError("SanitizationPolicy.allowed_attributes contains an empty tag key")
-
-            attr_set = attrs if isinstance(attrs, set) else set(attrs)
-            normalized_attr_set = _normalize_policy_name_set(attr_set)
-
-            if tag_name in normalized_attrs:
-                normalized_attrs[tag_name].update(normalized_attr_set)
-            else:
-                normalized_attrs[tag_name] = normalized_attr_set
-
-        object.__setattr__(self, "allowed_attributes", normalized_attrs)
+        object.__setattr__(self, "allowed_attributes", _normalize_allowed_attributes(self.allowed_attributes))
 
         normalized_drop_content_tags = _normalize_policy_name_set(self.drop_content_tags)
         object.__setattr__(self, "drop_content_tags", normalized_drop_content_tags)
@@ -381,15 +361,7 @@ def _compiled_sanitization_policy_for_policy(policy: SanitizationPolicy) -> Comp
 
 
 def _sanitization_policy_signature(policy: SanitizationPolicy) -> tuple[Any, ...]:
-    allowed_attributes_sig = tuple(
-        sorted(
-            (
-                str(tag).lower(),
-                tuple(sorted(str(attr).lower() for attr in attrs)),
-            )
-            for tag, attrs in policy.allowed_attributes.items()
-        )
-    )
+    allowed_attributes_sig = _allowed_attributes_signature(policy.allowed_attributes)
 
     return (
         tuple(sorted(str(tag).lower() for tag in policy.allowed_tags)),

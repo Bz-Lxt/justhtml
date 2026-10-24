@@ -88,6 +88,9 @@ Promise:
 - Custom allowlists are authoritative. If a caller explicitly allows a tag or
   attribute, JustHTML preserves that choice instead of silently overriding it
   with extra hardcoded tag or attribute bans.
+- Attribute value allowlists match literals and whole-value regex patterns before
+  URL and inline-style checks; matching does not bypass those checks. Regex patterns
+  are trusted configuration and can cause excessive backtracking on hostile values.
 - The default policy blocks event handler attributes and executable tags.
 - The default policy drops the contents of dangerous rawtext containers such as
   `<script>` and `<style>`.

@@ -48,7 +48,8 @@ defines the sanitization point; transforms after it are not sanitized again.
   mutation. `dom/builder.py` contains programmatic construction helpers.
 - `sanitizer/policy.py` and `policy_defaults.py`: Policy model, compilation,
   and built-in policies. `sanitizer/dom.py` is the standalone DOM entry point;
-  `css.py`, `rawtext.py`, and `url/` own their respective value domains.
+  `attributes.py`, `css.py`, `rawtext.py`, and `url/` own their respective value
+  domains; `values.py` supplies shared literal and regex value matching.
 - `transforms/spec.py`: Public declarative transform types.
   `transforms/compile.py` lowers them to internal operations, and
   `transforms/runtime.py` applies those operations to the DOM.

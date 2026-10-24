@@ -9,7 +9,6 @@ policy-driven.
 from __future__ import annotations
 
 from .css import (
-    Regex,
     _css_value_contains_disallowed_functions,
     _css_value_has_disallowed_resource_functions,
     _css_value_may_load_external_resource,
@@ -58,6 +57,7 @@ from .url import (
     _sanitize_url_value_with_rule,
     _strip_invisible_unicode,
 )
+from .values import Regex
 
 __all__ = [
     "CSS_PRESET_TEXT",
