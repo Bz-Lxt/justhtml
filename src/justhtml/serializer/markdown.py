@@ -153,6 +153,7 @@ def _markdown_link_destination(url: str) -> str:
 
 
 _MAX_BLOCKQUOTE_DEPTH = 64
+_MAX_LIST_DEPTH = 64
 
 
 class _MarkdownBuilder:
@@ -537,7 +538,8 @@ def _to_markdown_walk(
 
         if kind == "visit_list_item":
             li_node, current_builder, current_list_depth, ordered, index = task[1], task[2], task[3], task[4], task[5]
-            current_builder.raw("  " * current_list_depth)
+            # Cap indentation so nested lists cannot produce quadratic output.
+            current_builder.raw("  " * min(current_list_depth, _MAX_LIST_DEPTH))
             current_builder.raw(f"{index}. " if ordered else "- ")
             tasks.extend(
                 ("visit", child, current_builder, False, current_list_depth + 1, False)

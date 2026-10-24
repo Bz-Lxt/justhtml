@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - Keep script scanning linear across repeated HTML comment markers, including with default sanitization and the event stream API.
+- Bound Markdown list indentation to prevent quadratic output expansion from deeply nested lists.
 
 ### Fixed
 

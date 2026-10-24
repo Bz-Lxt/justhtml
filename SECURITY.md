@@ -155,6 +155,8 @@ Promise:
 - `to_markdown()` wraps or encodes link destinations that could break Markdown
   link syntax.
 - `to_markdown()` uses code fences long enough to contain backticks safely.
+- `to_markdown()` bounds list indentation and blockquote prefixes so deeply
+  nested input cannot cause quadratic output expansion.
 - `to_markdown()` drops `<script>`, `<style>`, and any `<textarea>` elements
   that remain in the DOM by default. Default sanitization may unwrap disallowed
   `<textarea>` elements and preserve their text content.

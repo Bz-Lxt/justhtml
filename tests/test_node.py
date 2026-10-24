@@ -578,6 +578,24 @@ class TestNode(unittest.TestCase):
         assert "- One\n- Two" in md
         assert "1. A\n2. B" in md
 
+    def test_to_markdown_bounds_nested_list_indentation(self):
+        for tag, marker in (("ul", "-"), ("ol", "1.")):
+            for depth in (63, 64, 65, 66, 2000):
+                source = f"<{tag}><li>x" * depth + f"</li></{tag}>" * depth
+                output = JustHTML(source).to_markdown()
+                lines = [line for line in output.splitlines() if line.strip()]
+                assert len(lines) == depth
+                assert all(line.lstrip() == f"{marker} x" for line in lines)
+                assert lines[0] == f"{marker} x"
+                assert lines[-1] == "  " * min(depth - 1, 64) + f"{marker} x"
+                assert len(output) <= 135 * depth
+
+    def test_to_markdown_nested_lists_scale_linearly(self):
+        assert_scales_linearly(
+            lambda size: JustHTML("<ul><li>x" * size + "</li></ul>" * size).root,
+            lambda root: root.to_markdown(),
+        )
+
     def test_to_markdown_tables_and_images_are_html(self):
         doc = JustHTML("<p>Hi<img src=x alt=y>there</p><table><tr><td>A</td></tr></table>")
         md = doc.to_markdown()
