@@ -7,10 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.15.0] - 2026-10-24
+
 ### Added
 
 - Allow per-attribute literal and `Regex(...)` value allowlists in `allowed_attributes`, preserving URL and inline-style validation.
-
 - Allow per-property CSS value allowlists with literal strings and `Regex(...)` patterns, including explicit permission for CSS variable references.
 
 ### Security
