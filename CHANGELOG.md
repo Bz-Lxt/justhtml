@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Allow per-property CSS value allowlists with literal strings and `Regex(...)` patterns, including explicit permission for CSS variable references.
+
 ### Security
 
 - Keep script scanning linear across repeated HTML comment markers, including with default sanitization and the event stream API.

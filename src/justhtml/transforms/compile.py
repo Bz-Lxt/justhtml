@@ -71,6 +71,7 @@ if TYPE_CHECKING:
     from typing import Protocol
 
     from justhtml.dom import Node
+    from justhtml.sanitizer.css import _CssProperties
     from justhtml.selector import ParsedSelector
 
     class NodeCallback(Protocol):
@@ -932,7 +933,7 @@ def _compile_allow_style_attrs_transform(
 
     def _allow_style_attrs(
         node: Node,
-        allowed_css_properties: tuple[str, ...] = allowed_css_properties,
+        allowed_css_properties: _CssProperties = allowed_css_properties,
         url_policy: UrlPolicy | None = style_url_policy,
         on_hook: NodeCallback | None = on_hook,
         on_report: ReportCallback | None = on_report,

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 from justhtml.core.types import ParseError
 from justhtml.selector import DEFAULT_SELECTOR_LIMITS, SelectorLimits
 
+from .css import _css_properties_signature, _CssProperties, _normalize_css_properties
 from .url import (
     DisallowedTagHandling,
     UnsafeHandling,
@@ -158,7 +159,7 @@ class SanitizationPolicy:
             drop_comments: bool = True,
             drop_doctype: bool = True,
             drop_content_tags: Collection[str] = ...,
-            allowed_css_properties: Collection[str] = ...,
+            allowed_css_properties: _CssProperties = ...,
             force_link_rel: Collection[str] = ...,
             unsafe_handling: UnsafeHandling = "strip",
             disallowed_tag_handling: DisallowedTagHandling = "unwrap",
@@ -178,7 +179,7 @@ class SanitizationPolicy:
     # Inline style allowlist.
     # Only applies when the `style` attribute is allowed for a tag.
     # If empty, inline styles are effectively disabled (style attributes are dropped).
-    allowed_css_properties: Collection[str] = field(default_factory=set)
+    allowed_css_properties: _CssProperties = field(default_factory=set)
 
     # Link hardening.
     # If non-empty, ensure these tokens are present in <a rel="...">.
@@ -286,8 +287,7 @@ class SanitizationPolicy:
         normalized_drop_content_tags = _normalize_policy_name_set(self.drop_content_tags)
         object.__setattr__(self, "drop_content_tags", normalized_drop_content_tags)
 
-        if not isinstance(self.allowed_css_properties, set):
-            object.__setattr__(self, "allowed_css_properties", set(self.allowed_css_properties))
+        object.__setattr__(self, "allowed_css_properties", _normalize_css_properties(self.allowed_css_properties))
 
         if not isinstance(self.force_link_rel, set):
             object.__setattr__(self, "force_link_rel", set(self.force_link_rel))
@@ -395,7 +395,7 @@ def _sanitization_policy_signature(policy: SanitizationPolicy) -> tuple[Any, ...
         tuple(sorted(str(tag).lower() for tag in policy.allowed_tags)),
         allowed_attributes_sig,
         tuple(sorted(str(tag).lower() for tag in policy.drop_content_tags)),
-        tuple(sorted(str(prop).lower() for prop in policy.allowed_css_properties)),
+        _css_properties_signature(policy.allowed_css_properties),
         tuple(sorted(str(token).lower() for token in policy.force_link_rel)),
         policy.disallowed_tag_handling,
         policy.strip_invisible_unicode,

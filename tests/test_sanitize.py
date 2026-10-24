@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import re
 import unittest
 from dataclasses import replace
 
 import justhtml
-from justhtml import JustHTML, Sanitize, SetAttrs
+from justhtml import AllowStyleAttrs, JustHTML, Regex, Sanitize, SetAttrs
 from justhtml.core.types import ParseError
 from justhtml.dom import Comment, DocumentFragment, Element, Node, Template, Text
 from justhtml.sanitizer import (
@@ -1565,6 +1566,161 @@ class TestSanitizeDom(unittest.TestCase):
             )
             is None
         )
+
+    def test_css_value_rules_across_sanitizer_entry_points(self) -> None:
+        policy = SanitizationPolicy(
+            allowed_tags={"p"},
+            allowed_attributes={"p": {"style"}},
+            allowed_css_properties={
+                "color": {"red", "var(--Primary)", Regex(r"#[0-9a-fA-F]{6}")},
+                "background-image": {"var(--image)"},
+                "font-weight": set(),
+            },
+        )
+        for value, expected in [
+            ("red", "color: red"),
+            (" red ", "color: red"),
+            ("#aBc123", "color: #aBc123"),
+            ("var(--Primary)", "color: var(--Primary)"),
+            ("var(--primary)", None),
+            ("blue", None),
+            ("#abcdef00", None),
+            ("#abcdef!important", None),
+            ("var(--Primary, red)", None),
+            ("var(--Primary) trailing", None),
+        ]:
+            source = f'<p style="color: {value}; font-weight: bold; --Primary: blue">x</p>'
+            output = f'<p style="{expected}">x</p>' if expected else "<p>x</p>"
+            with self.subTest(value=value):
+                assert JustHTML(source, policy=policy, fragment=True).to_html() == output
+                assert JustHTML(source, fragment=True, transforms=[Sanitize(policy=policy)]).to_html() == output
+                tree = JustHTML(source, sanitize=False, fragment=True).root
+                sanitize_dom(tree, policy=policy)
+                assert tree.to_html() == output
+                assert (
+                    JustHTML(
+                        source,
+                        sanitize=False,
+                        fragment=True,
+                        transforms=[AllowStyleAttrs("*", allowed_css_properties=policy.allowed_css_properties)],
+                    ).to_html()
+                    == output
+                )
+        assert (
+            JustHTML(
+                '<p style="background-image: var(--image)">x</p>',
+                policy=policy,
+                fragment=True,
+            ).to_html()
+            == '<p style="background-image: var(--image)">x</p>'
+        )
+
+    def test_css_value_rules_keep_resource_and_structure_checks(self) -> None:
+        rules = {"background": {Regex(r"[\s\S]*")}}
+        url_policy = UrlPolicy(
+            allow_rules={
+                ("*", "style:background"): UrlRule(allowed_schemes={"https"}, allowed_hosts={"good.test"}),
+            }
+        )
+        for value in [
+            "url(https://bad.test/x)",
+            "url(javascript:alert(1))",
+            "expression(alert(1))",
+            "image-set('https://bad.test/x' 1x)",
+            "inherit",
+            "unset!important",
+            "revert-layer",
+            "var(--x/*comment*/)",
+            r"v\61r(--x)",
+            "var(--x",
+            "var(--x))",
+            "[red)",
+            "red]",
+            "{red}",
+            "red}",
+            "red\x01",
+            "red\x7f",
+            "'red",
+            "'red\n'",
+            "'red\r'",
+            "'red\f'",
+        ]:
+            with self.subTest(value=value):
+                assert (
+                    _sanitize_inline_style(
+                        allowed_css_properties=rules,
+                        value=f"background: {value}",
+                        tag="p",
+                        url_policy=url_policy,
+                    )
+                    is None
+                )
+        for value in ["var(--x)", "var(--x, red)", "[red]", "'red'", '"red"', "red\t", "rgb(1, 2, 3)"]:
+            assert (
+                _sanitize_inline_style(
+                    allowed_css_properties=rules,
+                    value=f"background: {value}",
+                    tag="p",
+                )
+                == f"background: {value.strip()}"
+            )
+        assert (
+            _sanitize_inline_style(
+                allowed_css_properties=rules,
+                value="background: url(https://good.test/x)",
+                tag="p",
+            )
+            is None
+        )
+        assert (
+            _sanitize_inline_style(
+                allowed_css_properties=rules,
+                value="background: url(https://good.test/x)",
+                tag="p",
+                url_policy=url_policy,
+            )
+            == "background: url('https://good.test/x')"
+        )
+        assert (
+            _sanitize_inline_style(
+                allowed_css_properties=rules,
+                value="background: 'red; position: fixed",
+                tag="p",
+            )
+            is None
+        )
+
+    def test_css_value_rules_normalization_and_cache_changes(self) -> None:
+        values = {"red", Regex(r"#[a-f0-9]{6}")}
+        policy = SanitizationPolicy(
+            allowed_tags={"p"},
+            allowed_attributes={"p": {"style"}},
+            allowed_css_properties={" COLOR ": values, "color": {"blue"}},
+        )
+        source = '<p style="color: red">x</p>'
+        values.clear()
+        assert JustHTML(source, policy=policy, fragment=True).to_html() == '<p style="color: red">x</p>'
+        assert (
+            JustHTML('<p style="color: blue">x</p>', policy=policy, fragment=True).to_html()
+            == '<p style="color: blue">x</p>'
+        )
+        policy.allowed_css_properties["color"] = {Regex("blue")}
+        assert JustHTML(source, policy=policy, fragment=True).to_html() == "<p>x</p>"
+        policy.allowed_css_properties["color"] = {Regex("red")}
+        assert JustHTML(source, policy=policy, fragment=True).to_html() == '<p style="color: red">x</p>'
+        policy.allowed_css_properties["color"] = set()
+        assert JustHTML(source, policy=policy, fragment=True).to_html() == "<p>x</p>"
+
+    def test_css_value_rule_configuration_errors(self) -> None:
+        for values in ["red", {1}]:
+            with self.subTest(values=values), self.assertRaises(TypeError):
+                SanitizationPolicy(
+                    allowed_tags={"p"},
+                    allowed_attributes={},
+                    allowed_css_properties={"color": values},
+                )
+        with self.assertRaises(re.error):
+            Regex("[")
 
     def test_sanitize_inline_style_drops_css_variable_indirection(self) -> None:
         policy = SanitizationPolicy(

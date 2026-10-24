@@ -9,6 +9,7 @@ policy-driven.
 from __future__ import annotations
 
 from .css import (
+    Regex,
     _css_value_contains_disallowed_functions,
     _css_value_has_disallowed_resource_functions,
     _css_value_may_load_external_resource,
@@ -66,6 +67,7 @@ __all__ = [
     "_URL_LIKE_ATTRS",
     "CompiledSanitizationPolicy",
     "DisallowedTagHandling",
+    "Regex",
     "SanitizationPolicy",
     "UnsafeHandler",
     "UnsafeHandling",

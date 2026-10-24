@@ -19,6 +19,7 @@ from justhtml.core.constants import (
     WHITESPACE_PRESERVING_ELEMENTS,
     WHITESPACE_TRIMMING_BLOCK_ELEMENTS,
 )
+from justhtml.sanitizer.css import _CssProperties, _normalize_css_properties
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection
@@ -584,7 +585,7 @@ class AllowStyleAttrs:
     """Sanitize inline style attributes when present."""
 
     selector: str
-    allowed_css_properties: tuple[str, ...]
+    allowed_css_properties: _CssProperties
     url_policy: UrlPolicy | None
     enabled: bool
     callback: NodeCallback | None
@@ -594,7 +595,7 @@ class AllowStyleAttrs:
         self,
         selector: str,
         *,
-        allowed_css_properties: Collection[str],
+        allowed_css_properties: _CssProperties,
         url_policy: UrlPolicy | None = None,
         enabled: bool = True,
         callback: NodeCallback | None = None,
@@ -604,7 +605,7 @@ class AllowStyleAttrs:
         object.__setattr__(
             self,
             "allowed_css_properties",
-            tuple(sorted({str(p).strip().lower() for p in allowed_css_properties if str(p).strip()})),
+            _normalize_css_properties(allowed_css_properties),
         )
         object.__setattr__(self, "url_policy", url_policy)
         object.__setattr__(self, "enabled", bool(enabled))

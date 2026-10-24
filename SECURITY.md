@@ -123,7 +123,8 @@ Promise:
   checking.
 - The default policy does not allow inline styles.
 - The sanitizer allowlists inline CSS by property and checks for URL-loading
-  behavior.
+  behavior. Explicit CSS value rules may authorize variable references; applications
+  control and trust their browser-resolved values, which cannot undergo URL filtering.
 
 Out of scope:
 - Blocking every possible browser request if a custom policy allows remote URL

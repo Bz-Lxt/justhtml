@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import re
+from collections.abc import Collection, Mapping
+from dataclasses import dataclass, field
 
 from justhtml.core.constants import HTML_SPACE_CHARACTERS
 
@@ -18,8 +20,66 @@ from .url import (
     _sanitize_url_value_with_rule,
 )
 
-if TYPE_CHECKING:
-    from collections.abc import Collection
+
+@dataclass(frozen=True, slots=True)
+class Regex:
+    """A trusted whole-value regular expression in a CSS property allowlist."""
+
+    pattern: str
+    _compiled: re.Pattern[str] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_compiled", re.compile(self.pattern))
+
+
+_CssProperties = Collection[str] | Mapping[str, Collection[str | Regex]]
+
+
+def _normalize_css_properties(properties: _CssProperties) -> _CssProperties:
+    if not isinstance(properties, Mapping):
+        return {str(prop).strip().lower() for prop in properties if str(prop).strip()}
+    normalized: dict[str, set[str | Regex]] = {}
+    for prop, values in properties.items():
+        if isinstance(values, str) or any(not isinstance(value, (str, Regex)) for value in values):
+            raise TypeError("CSS value rules must be collections of strings or Regex objects")
+        name = prop.strip(HTML_SPACE_CHARACTERS).lower()
+        normalized.setdefault(name, set()).update(values)
+    return {prop: frozenset(values) for prop, values in normalized.items()}
+
+
+def _css_properties_signature(properties: _CssProperties) -> tuple[object, ...]:
+    if not isinstance(properties, Mapping):
+        return tuple(sorted(str(prop).lower() for prop in properties))
+    return tuple(
+        (prop, tuple(sorted(("regex", v.pattern) if isinstance(v, Regex) else ("literal", v) for v in values)))
+        for prop, values in sorted(properties.items())
+    )
+
+
+def _css_value_is_structurally_safe(value: str) -> bool:
+    # Values must not change declaration boundaries when joined and reparsed.
+    # Keep the accepted subset conservative rather than interpreting CSS escapes.
+    if "\\" in value or "/*" in value:
+        return False
+    closing: list[str] = []
+    quote = ""
+    for ch in value:
+        if (ord(ch) < 0x20 and ch not in HTML_SPACE_CHARACTERS) or ch == "\x7f":
+            return False
+        if quote:
+            if ch == quote:
+                quote = ""
+            elif ch in "\r\n\f":
+                return False
+        elif ch in {"'", '"'}:
+            quote = ch
+        elif ch in "{;}":
+            return False
+        elif ch in "([":
+            closing.append(")" if ch == "(" else "]")
+        elif ch in ")]" and (not closing or closing.pop() != ch):
+            return False
+    return not quote and not closing
 
 
 def _is_valid_css_property_name(name: str) -> bool:
@@ -34,7 +94,7 @@ def _is_valid_css_property_name(name: str) -> bool:
     return True
 
 
-def _css_value_contains_disallowed_functions(value: str, *, allow_url: bool) -> bool:
+def _css_value_contains_disallowed_functions(value: str, *, allow_url: bool, allow_variables: bool = False) -> bool:
     # Extremely conservative check: reject any declaration value that contains a
     # CSS function/construct that can load external resources.
     #
@@ -81,7 +141,6 @@ def _css_value_contains_disallowed_functions(value: str, *, allow_url: bool) -> 
 
     blocked_tokens = (
         "@import",
-        "var(",
         ":inherit",
         ":revert",
         ":unset",
@@ -97,17 +156,20 @@ def _css_value_contains_disallowed_functions(value: str, *, allow_url: bool) -> 
     if any(token in compact for token in blocked_tokens):
         return True
 
+    if not allow_variables and "var(" in compact:
+        return True
+
     return not allow_url and "url(" in compact
 
 
-def _css_value_may_load_external_resource(value: str) -> bool:
-    return _css_value_contains_disallowed_functions(value, allow_url=False)
+def _css_value_may_load_external_resource(value: str, *, allow_variables: bool = False) -> bool:
+    return _css_value_contains_disallowed_functions(value, allow_url=False, allow_variables=allow_variables)
 
 
-def _css_value_has_disallowed_resource_functions(value: str) -> bool:
+def _css_value_has_disallowed_resource_functions(value: str, *, allow_variables: bool = False) -> bool:
     """Return True if `value` contains disallowed CSS constructs (excluding url())."""
 
-    return _css_value_contains_disallowed_functions(value, allow_url=True)
+    return _css_value_contains_disallowed_functions(value, allow_url=True, allow_variables=allow_variables)
 
 
 def _lookup_css_url_rule(*, url_policy: UrlPolicy, tag: str, prop: str) -> UrlRule | None:
@@ -243,7 +305,7 @@ def _sanitize_css_url_functions(*, url_policy: UrlPolicy, tag: str, prop: str, v
 
 def _sanitize_inline_style(
     *,
-    allowed_css_properties: Collection[str],
+    allowed_css_properties: _CssProperties,
     value: str,
     tag: str,
     url_policy: UrlPolicy | None = None,
@@ -276,14 +338,24 @@ def _sanitize_inline_style(
         if not prop_value:
             continue
 
+        value_rules = allowed.get(prop) if isinstance(allowed, Mapping) else None
+        if value_rules is not None:
+            if not _css_value_is_structurally_safe(prop_value):
+                continue
+            if not any(
+                rule._compiled.fullmatch(prop_value) is not None if isinstance(rule, Regex) else prop_value == rule
+                for rule in value_rules
+            ):
+                continue
+
         if prop_value.lower() in {"inherit", "revert", "revert-layer", "unset"}:
             continue
 
-        if _css_value_may_load_external_resource(prop_value):
+        if _css_value_may_load_external_resource(prop_value, allow_variables=value_rules is not None):
             if url_policy is None:
                 continue
 
-            if _css_value_has_disallowed_resource_functions(prop_value):
+            if _css_value_has_disallowed_resource_functions(prop_value, allow_variables=value_rules is not None):
                 continue
 
             sanitized_with_urls = _sanitize_css_url_functions(

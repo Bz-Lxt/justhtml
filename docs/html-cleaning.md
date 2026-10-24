@@ -149,6 +149,70 @@ html = '<p style="color: red; background-image: url(https://evil.test/x); width:
 print(JustHTML(html, policy=policy).to_html())
 ```
 
+### Restrict CSS values
+
+Pass a mapping to allow only specific values for each property. Plain strings are
+literal, case-sensitive values. Wrap a pattern in `Regex(...)` to match the whole
+value; JustHTML compiles it when the `Regex` is constructed.
+
+```python
+from justhtml import JustHTML, Regex, SanitizationPolicy
+
+policy = SanitizationPolicy(
+    allowed_tags={"p"},
+    allowed_attributes={"p": {"style"}},
+    allowed_css_properties={
+        "color": {
+            "var(--primary-color)",
+            Regex(r"#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?"),
+        },
+        "background-color": {"var(--surface-color)"},
+    },
+)
+print(JustHTML(
+    '<p style="color: var(--primary-color); background-color: red">Hello</p>',
+    fragment=True,
+    policy=policy,
+).to_html())
+```
+
+<!-- justhtml: output -->
+
+```html
+<p style="color: var(--primary-color)">Hello</p>
+```
+
+The mapping is exhaustive: normal colors such as `red` are rejected unless a
+literal or pattern matches them. Values are matched after trimming surrounding
+HTML ASCII whitespace. An empty value set allows no values for that property;
+properties absent from the mapping are disallowed. The original collection form,
+such as `allowed_css_properties={"color"}`, retains the normal sanitizer checks.
+
+A matching rule explicitly permits CSS variable references, including fallbacks
+if the rule matches them. Variable names retain their case. Permission to
+reference `--primary-color` does not permit a `--primary-color: ...` declaration;
+that property would need its own explicit permission.
+
+**Variable definitions are trusted application input.** Variables resolve in the
+browser after sanitization. With `background-image: var(--image)`, for example,
+an external URL in the variable definition can cause a request without passing
+through JustHTML's URL validation, filtering, or proxying. The application must
+also trust indirect references and fallbacks in those variable definitions.
+Only permit these values when the application controls their definitions and
+accepts their effects. The property using the variable determines its effects,
+regardless of the variable's name.
+
+Value rules do not bypass declaration structure checks or checks on directly
+supplied URLs. Matching values with comments, CSS escapes, control characters, or
+unbalanced delimiters are rejected conservatively. Existing bans on constructs
+such as `expression()` and `image-set()` still apply, as do the URL rules for
+literal `url(...)` values. URL validation/proxying may rewrite an accepted URL.
+
+Regex patterns are trusted configuration, but run against untrusted input.
+Prefer bounded patterns such as the hex-color pattern above. Python regexes can
+backtrack excessively; JustHTML does not provide a regex timeout. Apply input
+size and execution limits appropriate to the application.
+
 ## Advanced policy options
 
 Selector limits are for trusted pipelines that need to accept unusually large selectors or match budgets:

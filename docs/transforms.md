@@ -570,6 +570,8 @@ If provided, `callback(node)` / `report(msg, node=...)` is called when a URL is 
 ### `AllowStyleAttrs(selector, allowed_css_properties=..., enabled=True, callback=None, report=None)`
 
 Sanitizes inline `style` attributes using an allowlist of CSS properties.
+`allowed_css_properties` accepts the same collection or mapping of literal and
+`Regex(...)` value rules as `SanitizationPolicy`; see [CSS value rules](html-cleaning.md#restrict-css-values).
 
 If provided, `callback(node)` / `report(msg, node=...)` is called when a `style` attribute is dropped.
 
