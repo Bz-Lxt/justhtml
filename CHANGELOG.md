@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Keep script scanning linear across repeated HTML comment markers, including with default sanitization and the event stream API.
 - Bound Markdown list indentation to prevent quadratic output expansion from deeply nested lists.
+- Reject non-ASCII IPv4 octets during linkification without raising conversion errors on Unicode digit lookalikes.
 
 ### Fixed
 

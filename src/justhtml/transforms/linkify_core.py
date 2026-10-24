@@ -136,7 +136,7 @@ def _is_valid_ipv4(host: str) -> bool:
     for p in parts:
         if not p or len(p) > 3:
             return False
-        if not p.isdigit():
+        if not p.isascii() or not p.isdecimal():
             return False
         v = int(p)
         if v < 0 or v > 255:

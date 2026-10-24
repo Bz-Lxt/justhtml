@@ -23,6 +23,20 @@ class TestLinkifyTransform(unittest.TestCase):
         out = doc.to_html(pretty=False)
         assert '<a href="mailto:test@example.com">test@example.com</a>' in out
 
+    def test_linkify_preserves_unicode_digit_hosts_without_conversion_errors(self) -> None:
+        for host in ("².².².²", "1.1.1.²", "1.1.1.①", "\u0661.\u0661.\u0661.\u0661"):
+            for sanitize in (True, False):
+                for fuzzy_ip in (True, False):
+                    doc = _JustHTML(host, sanitize=sanitize, transforms=[Linkify(fuzzy_ip=fuzzy_ip)])
+                    assert doc.to_text() == host
+                    assert doc.query("a") == []
+
+    def test_linkify_ascii_ipv4_respects_fuzzy_ip_option(self) -> None:
+        for fuzzy_ip in (True, False):
+            doc = _JustHTML("127.0.0.1", fragment=True, transforms=[Linkify(fuzzy_ip=fuzzy_ip)])
+            expected = '<a href="http://127.0.0.1">127.0.0.1</a>' if fuzzy_ip else "127.0.0.1"
+            assert doc.to_html(pretty=False) == expected
+
     def test_linkify_does_not_linkify_inside_existing_anchor(self) -> None:
         doc = self._parse('<p><a href="/x">example.com</a></p>', transforms=[Linkify()])
         out = doc.to_html(pretty=False)
