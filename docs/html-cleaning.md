@@ -202,9 +202,11 @@ print(JustHTML(html, policy=policy).to_html())
 
 ### Restrict CSS values
 
-Pass a mapping to allow only specific values for each property. Plain strings are
-literal, case-sensitive values. Wrap a pattern in `Regex(...)` to match the whole
-value; JustHTML compiles it when the `Regex` is constructed.
+Pass a mapping to restrict values for individual properties. Use `True` to allow
+a property with the normal sanitizer checks and no additional value restriction.
+Plain strings in value collections are literal, case-sensitive values. Wrap a
+pattern in `Regex(...)` to match the whole value; JustHTML compiles it when the
+`Regex` is constructed.
 
 ```python
 from justhtml import JustHTML, Regex, SanitizationPolicy
@@ -218,10 +220,11 @@ policy = SanitizationPolicy(
             Regex(r"#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?"),
         },
         "background-color": {"var(--surface-color)"},
+        "font-family": True,
     },
 )
 print(JustHTML(
-    '<p style="color: var(--primary-color); background-color: red">Hello</p>',
+    '<p style="color: var(--primary-color); background-color: red; font-family: Arial">Hello</p>',
     fragment=True,
     policy=policy,
 ).to_html())
@@ -230,14 +233,16 @@ print(JustHTML(
 <!-- justhtml: output -->
 
 ```html
-<p style="color: var(--primary-color)">Hello</p>
+<p style="color: var(--primary-color); font-family: Arial">Hello</p>
 ```
 
-The mapping is exhaustive: normal colors such as `red` are rejected unless a
-literal or pattern matches them. Values are matched after trimming surrounding
-HTML ASCII whitespace. An empty value set allows no values for that property;
+For properties with value collections, normal colors such as `red` are rejected
+unless a literal or pattern matches them. Values are matched after trimming
+surrounding HTML ASCII whitespace. An empty value set allows no values for that property;
 properties absent from the mapping are disallowed. The original collection form,
-such as `allowed_css_properties={"color"}`, retains the normal sanitizer checks.
+such as `allowed_css_properties={"color"}`, behaves like `{"color": True}`.
+`True` does not authorize CSS variables or bypass URL checks. `False` and `None`
+are invalid; omit a property to disallow it.
 
 A matching rule explicitly permits CSS variable references, including fallbacks
 if the rule matches them. Variable names retain their case. Permission to

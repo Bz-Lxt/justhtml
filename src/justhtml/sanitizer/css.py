@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping
+from typing import Literal
 
 from justhtml.core.constants import HTML_SPACE_CHARACTERS
 
@@ -19,25 +20,37 @@ from .url import (
 )
 from .values import Regex, _matches_value_rules, _value_rules_signature
 
-_CssProperties = Collection[str] | Mapping[str, Collection[str | Regex]]
+_CssProperties = Collection[str] | Mapping[str, Collection[str | Regex] | Literal[True]]
 
 
 def _normalize_css_properties(properties: _CssProperties) -> _CssProperties:
     if not isinstance(properties, Mapping):
         return {str(prop).strip().lower() for prop in properties if str(prop).strip()}
-    normalized: dict[str, set[str | Regex]] = {}
+    normalized: dict[str, set[str | Regex] | Literal[True]] = {}
     for prop, values in properties.items():
-        if isinstance(values, str) or any(not isinstance(value, (str, Regex)) for value in values):
-            raise TypeError("CSS value rules must be collections of strings or Regex objects")
         name = prop.strip(HTML_SPACE_CHARACTERS).lower()
-        normalized.setdefault(name, set()).update(values)
-    return {prop: frozenset(values) for prop, values in normalized.items()}
+        if values is True:
+            normalized[name] = True
+            continue
+        if (
+            not isinstance(values, Collection)
+            or isinstance(values, str)
+            or any(not isinstance(value, (str, Regex)) for value in values)
+        ):
+            raise TypeError("CSS value rules must be True or collections of strings or Regex objects")
+        existing = normalized.setdefault(name, set())
+        if existing is not True:
+            existing.update(values)
+    return {prop: True if values is True else frozenset(values) for prop, values in normalized.items()}
 
 
 def _css_properties_signature(properties: _CssProperties) -> tuple[object, ...]:
     if not isinstance(properties, Mapping):
         return tuple(sorted(str(prop).lower() for prop in properties))
-    return tuple((prop, _value_rules_signature(values)) for prop, values in sorted(properties.items()))
+    return tuple(
+        (prop, True if values is True else _value_rules_signature(values))
+        for prop, values in sorted(properties.items())
+    )
 
 
 def _css_value_is_structurally_safe(value: str) -> bool:
@@ -323,6 +336,8 @@ def _sanitize_inline_style(
             continue
 
         value_rules = allowed.get(prop) if isinstance(allowed, Mapping) else None
+        if value_rules is True:
+            value_rules = None
         if value_rules is not None:
             if not _css_value_is_structurally_safe(prop_value):
                 continue
