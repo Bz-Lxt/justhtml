@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.16.0] - 2026-10-26
+
 ### Added
 
 - Allow `True` in `allowed_css_properties` mappings to mix properties using normal sanitizer checks with properties restricted by literal or regex value rules.
