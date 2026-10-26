@@ -64,6 +64,7 @@ _DOCTYPE_RE = re.compile(
     re.IGNORECASE,
 )
 _SPACE = _scanner.SPACE
+_SPACE_REFERENCE_RE = re.compile(r"&(?:#[xX][0-9a-fA-F]+;?|#[0-9]+;?|Tab;|NewLine;)")
 _ASCII_LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _TAG_NAME_STOP = _scanner.TAG_NAME_STOP + "\r"
 _ATTR_NAME_STOP = _scanner.ATTR_NAME_STOP + "\r"
@@ -266,6 +267,21 @@ _FRAMESET_BODY_BLOCKING_TAGS = _FRAMESET_BLOCKING_START_TAGS | {"br", "hr", "img
 _UNWRAP_CONSTRUCTION_SKIP_TAGS = {"col", "colgroup", "form", "menuitem"}
 _FOREIGN_FULL_PARSE_TAGS = FOREIGN_BREAKOUT_ELEMENTS | {"annotation-xml", "desc", "font", "foreignobject", "title"}
 _URL_FAST_FALLBACK = object()
+
+
+def _leading_text_space_end(raw: str) -> int:
+    """Find the source boundary of HTML whitespace tokens without discarding NULs."""
+    end = len(raw) - len(raw.lstrip(_SPACE))
+    while end < len(raw) and raw[end] == "&":
+        # Only Tab and NewLine are named references for HTML whitespace. Numeric
+        # references use the shared decoder, including its invalid-codepoint rules.
+        reference = _SPACE_REFERENCE_RE.match(raw, end)
+        if reference is None or decode_entities_in_text(reference[0]).strip(_SPACE):
+            break
+        end = reference.end()
+        while end < len(raw) and raw[end] in _SPACE:
+            end += 1
+    return end
 
 
 def _sanitize_simple_url_fast(value: str, rule: UrlRule, allow_relative: bool) -> str | None | object:
@@ -2256,13 +2272,9 @@ class ParseEngine:
             pending_table_whitespace = int(self._foster_next_table_whitespace)
             self._foster_next_table_whitespace = 0  # pragma: no cover - unreachable after parser-state guards
         if not self._quirks_mode:
-            if "&" in raw:
-                initial_text = self._clean_text(raw)
-                if initial_text and initial_text.strip(_SPACE + "\0") == "":
-                    return
-            initial_end = 0
-            while initial_end < len(raw) and raw[initial_end] in _SPACE + "\0":
-                initial_end += 1
+            # In the initial/before-head modes only HTML whitespace is ignored.
+            # A NUL implies the document shell before "in body" discards it.
+            initial_end = _leading_text_space_end(raw)
             if initial_end:
                 raw = raw[initial_end:]
                 if source_pos is not None:  # pragma: no branch - parser text always has a source offset
@@ -2323,28 +2335,28 @@ class ParseEngine:
         if (
             not self._fragment
             and self._head is not None
-            and parent is self._head
+            and (parent is self._head or self._in_head_noscript)
             and not self._template_modes
             and self._html is not None
         ):
-            if raw_is_space is None:  # pragma: no branch - opposite edge requires invalid parser state
-                candidate = self._clean_text(raw) if "&" in raw else raw
-                raw_is_space = candidate.strip(_SPACE) == ""
+            leading_len = _leading_text_space_end(raw)
+            raw_is_space = leading_len == len(raw)
             if not raw_is_space:
-                stripped = raw.lstrip(_SPACE)
-                leading_len = len(raw) - len(stripped)
                 if leading_len:
                     leading_text = self._clean_text(raw[:leading_len])
                     node = (
                         self._new_text(leading_text, source_pos) if self._track_node_locations else Text(leading_text)
                     )
-                    self._append(self._head, node)
+                    self._append(parent, node)
                     if source_pos is not None:  # pragma: no branch - opposite edge requires invalid parser state
                         source_pos += leading_len
-                    raw = stripped
-                self._stack = _CountingStack([self._doc, self._html, self._body])  # type: ignore[list-item]
-                self._after_head = False
-                self._body_mode_seen = True
+                    raw = raw[leading_len:]
+                if self._in_head_noscript:
+                    self._leave_head_noscript_to_body()
+                else:
+                    self._stack = _CountingStack([self._doc, self._html, self._body])  # type: ignore[list-item]
+                    self._after_head = False
+                    self._body_mode_seen = True
                 parent = self._body
         if not self._fragment and parent is self._html and self._after_head:
             if raw_is_space is None:  # pragma: no branch - opposite edge requires invalid parser state
@@ -2370,15 +2382,13 @@ class ParseEngine:
             and not self._body_mode_seen
             and not self._body_has_content()
         ):
-            if "&" in raw:
-                initial_text = self._clean_text(raw)
-                if initial_text and initial_text.strip(_SPACE + "\0") == "":
-                    return
-            if raw_is_space is None:  # pragma: no branch - shell text reaches this block without prior classification
-                raw_is_space = raw.strip(_SPACE + "\0") == ""
-            if raw_is_space:
+            leading_len = _leading_text_space_end(raw)
+            if leading_len == len(raw):
                 return
-            raw = raw.lstrip(_SPACE + "\0")
+            raw = raw[leading_len:]
+            if source_pos is not None:  # pragma: no branch - parser text has a source offset
+                source_pos += leading_len
+            self._body_mode_seen = True
         if self._in_colgroup and getattr(parent, "name", None) == "table":
             if raw.strip(_SPACE):  # pragma: no branch - mixed colgroup text is the state-changing edge
                 leading = len(raw) - len(raw.lstrip(_SPACE))
@@ -2418,11 +2428,6 @@ class ParseEngine:
             self._ignore_lf = False
             text = text.removeprefix("\n")
         text_is_space: bool | None = None
-        if self._in_head_noscript:
-            text_is_space = text.strip(_SPACE) == "" if text else True
-            if not text_is_space:
-                self._leave_head_noscript_to_body()
-                parent = self._body
         if text:
             if not self._fragment and parent is self._html and self._after_head:
                 if text_is_space is None:  # pragma: no branch - opposite edge requires invalid parser state

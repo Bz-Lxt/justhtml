@@ -3,7 +3,7 @@ import unittest
 from collections import Counter
 from dataclasses import replace
 
-from justhtml import JustHTML, Sanitize
+from justhtml import JustHTML, Sanitize, sanitize_dom
 from justhtml.dom import DocumentFragment, Element, Template, Text
 from justhtml.parser.context import FragmentContext
 from justhtml.parser.engine import (
@@ -864,6 +864,30 @@ class TestCountingStack(unittest.TestCase):
 
 
 class TestParserSyntaxAndRecovery(_ParserEngineTestCase):
+    def test_leading_null_implies_body_across_sanitization_paths(self) -> None:
+        for prefix in ("", "<!doctype html>", "<html>", "<head>", "<head><noscript>"):
+            for whitespace in (" ", "&#32;", "&#x020;", "&#9", "&Tab;", "&NewLine;"):
+                source = f"{prefix}{whitespace}\0&#32;<title>t</title>"
+                with self.subTest(prefix=prefix, whitespace=whitespace):
+                    raw = JustHTML(source, sanitize=False, scripting_enabled=False)
+                    assert len(raw.query("body title")) == 1
+                    assert raw.query("body")[0].children[0].data == " "
+                    sanitize_dom(raw.root)
+                    expected = raw.to_html(pretty=False)
+                    self.assert_parses_to(source, expected, scripting_enabled=False)
+                    self.assert_parses_to(source, expected, scripting_enabled=False, transforms=[Sanitize()])
+
+    def test_shell_whitespace_preserves_text_source_locations(self) -> None:
+        for prefix in ("", "<!doctype html>", "<head>"):
+            for whitespace in (" \r\n", "&#32;", "&Tab;&#xA; "):
+                source = f"{prefix}{whitespace}x"
+                for transforms in (None, [Sanitize()]):
+                    document = JustHTML(source, transforms=transforms, track_node_locations=True)
+                    text = document.query("body")[0].children[0]
+                    assert text.data == "x"
+                    before = source[:-1]
+                    assert text.origin_location == (before.count("\n") + 1, len(before.rsplit("\n", 1)[-1]) + 1)
+
     def test_void_head_whitespace_agrees_across_sanitization_paths(self) -> None:
         for tag in ("base", "basefont", "bgsound", "link", "meta"):
             for prefix in ("", "<head>"):

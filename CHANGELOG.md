@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Process a leading NUL through document and head recovery before discarding it in the body, including text mixed with character references. Preserve following body whitespace, head-element placement, and text source locations.
+
 ## [3.15.0] - 2026-10-24
 
 ### Added

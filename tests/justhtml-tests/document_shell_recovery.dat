@@ -391,3 +391,147 @@
 |     " "
 |   <body>
 |     "x"
+
+#data
+<!DOCTYPE html>\x00 <table>
+#errors
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     " "
+|     <table>
+
+#data
+<!DOCTYPE html>\x00<title>t</title>
+#errors
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     <title>
+|       "t"
+
+#data
+\x00<!DOCTYPE html><p>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     <p>
+
+#data
+&#32;\x00&#32;<title>t</title>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     " "
+|     <title>
+|       "t"
+
+#data
+<!DOCTYPE html>&Tab;\x00&#32;<title>t</title>
+#errors
+#document
+| <!DOCTYPE html>
+| <html>
+|   <head>
+|   <body>
+|     " "
+|     <title>
+|       "t"
+
+#data
+<html>&#x20;\x00&#32;<title>t</title>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     " "
+|     <title>
+|       "t"
+
+#data
+<head>&NewLine;\x00&#32;<title>t</title>
+#errors
+#document
+| <html>
+|   <head>
+|     "
+"
+|   <body>
+|     " "
+|     <title>
+|       "t"
+
+#data
+<head>\x00&#32;<title>t</title>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     " "
+|     <title>
+|       "t"
+
+#data
+<head>&#32;x<title>t</title>
+#errors
+#document
+| <html>
+|   <head>
+|     " "
+|   <body>
+|     "x"
+|     <title>
+|       "t"
+
+#data
+<head><noscript>&Tab;\x00&#32;<title>t</title>
+#errors
+#script-off
+#document
+| <html>
+|   <head>
+|     <noscript>
+|       "	"
+|   <body>
+|     " "
+|     <title>
+|       "t"
+
+#data
+\x00<frameset><frame>
+#errors
+#document
+| <html>
+|   <head>
+|   <frameset>
+|     <frame>
+
+#data
+&#0;<frameset>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     "�"
+
+#data
+&amp;#32;<title>t</title>
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     "&#32;"
+|     <title>
+|       "t"
