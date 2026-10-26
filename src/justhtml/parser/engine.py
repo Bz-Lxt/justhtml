@@ -2359,13 +2359,23 @@ class ParseEngine:
                     self._body_mode_seen = True
                 parent = self._body
         if not self._fragment and parent is self._html and self._after_head:
-            if raw_is_space is None:  # pragma: no branch - opposite edge requires invalid parser state
-                raw_is_space = raw.strip(_SPACE) == ""
-            if not raw_is_space:
-                self._stack = _CountingStack([self._doc, self._html, self._body])  # type: ignore[list-item]
-                self._after_head = False
-                self._body_mode_seen = True
-                parent = self._body
+            # "After head" inserts whitespace before the implied body, including
+            # whitespace emitted by character references (§13.2.6.4.6).
+            leading_len = _leading_text_space_end(raw)
+            if leading_len:
+                leading_text = self._clean_text(raw[:leading_len])
+                node = self._new_text(leading_text, source_pos) if self._track_node_locations else Text(leading_text)
+                html_parent: Element = parent  # type: ignore[assignment]
+                self._insert_at(html_parent, html_parent.children.index(self._body), node)
+                raw = raw[leading_len:]
+                if source_pos is not None:  # pragma: no branch - parser text has a source offset
+                    source_pos += leading_len
+            if not raw:
+                return
+            self._stack = _CountingStack([self._doc, self._html, self._body])  # type: ignore[list-item]
+            self._after_head = False
+            self._body_mode_seen = True
+            parent = self._body
         if not self._fragment and self._after_document_mode:
             if raw_is_space is None:  # pragma: no branch - earlier text-path checks usually classify whitespace first
                 raw_is_space = raw.strip(_SPACE) == ""
@@ -2427,23 +2437,7 @@ class ParseEngine:
         if self._ignore_lf:
             self._ignore_lf = False
             text = text.removeprefix("\n")
-        text_is_space: bool | None = None
         if text:
-            if not self._fragment and parent is self._html and self._after_head:
-                if text_is_space is None:  # pragma: no branch - opposite edge requires invalid parser state
-                    text_is_space = text.strip(_SPACE) == ""
-                if text_is_space:  # pragma: no branch - opposite edge requires invalid parser state
-                    body = self._body
-                    html_parent: Element = parent  # type: ignore[assignment]
-                    children = html_parent.children
-                    position = len(children)
-                    try:
-                        position = children.index(body)
-                    except ValueError:  # pragma: no cover - unreachable after parser-state guards
-                        pass  # pragma: no cover - unreachable after parser-state guards
-                    node = self._new_text(text, source_pos) if self._track_node_locations else Text(text)
-                    self._insert_at(html_parent, position, node)
-                    return
             foster = None
             # Foster parenting only applies in HTML table insertion modes. A
             # foreign element that merely shares a name with a table foster
@@ -2455,10 +2449,10 @@ class ParseEngine:
                 _PARSER_ONLY_NAMESPACE,
             }
             if parent_is_table_foster:
-                is_table_space = text_is_space if text_is_space is not None else text.strip(_SPACE) == ""
+                is_table_space = text.strip(_SPACE) == ""
                 if not is_table_space:
                     if pending_table_whitespace:
-                        children = parent.children  # type: ignore[assignment]
+                        children: list[Any] = parent.children  # type: ignore[assignment]
                         if (
                             children
                             and type(children[-1]) is Text
@@ -3142,9 +3136,9 @@ class ParseEngine:
         if name == "image":
             name = "img"
             action = self._tag_actions.get(name, _UNKNOWN_TAG_ACTION)
-        if name in _INLINE_HEAD_VOID_START_TAGS:
-            # Metadata tokens must update head state even when their elements
-            # are removed by the compiled sanitization policy.
+        if action.head_content and (name in _INLINE_HEAD_VOID_START_TAGS or self._after_head):
+            # Metadata tokens and temporary head re-entry share recovery state
+            # even when the compiled sanitization policy removes their elements.
             return self._parse_start_tag(name_start, end)
         if self._foreign_context_seen:
             namespace = self._stack[-1].namespace
@@ -3382,21 +3376,10 @@ class ParseEngine:
             and self._after_head
             and name not in {"body", "template"}
         ):
-            if (
-                action.allowed
-                and action.head_content
-                and self._head is not None
-                and not self._body_mode_seen
-                and not self._body_has_content()
-            ):
-                self._stack = _CountingStack([self._doc, self._html, self._head])  # type: ignore[list-item]
-                self._after_head = False
-                current_top = self._head
-            else:
-                self._stack = _CountingStack([self._doc, self._html, self._body])  # type: ignore[list-item]
-                self._after_head = False
-                self._body_mode_seen = True
-                current_top = self._body
+            self._stack = _CountingStack([self._doc, self._html, self._body])  # type: ignore[list-item]
+            self._after_head = False
+            self._body_mode_seen = True
+            current_top = self._body
 
         if not in_parser_only_template and not self._fragment and not self._frameset_seen and action.blocks_frameset:
             if action.name == "input":
@@ -3765,7 +3748,6 @@ class ParseEngine:
         ):
             if (
                 action is not None
-                and (allowed or name in _HTML_VOID_ELEMENTS)
                 and action.head_content
                 # "after head" re-enters the head only for the metadata start
                 # tags it lists; noscript is not among them and starts the body.
@@ -3939,9 +3921,13 @@ class ParseEngine:
         if action is not None and not raw_mode and action.drop_content:
             if self._raw_head_text_parent(name) and self._head is not None:
                 self._stack = _CountingStack([self._doc, self._html, self._head])  # type: ignore[list-item]
-            return self._skip_rawtext(name, pos, end)
+            pos = self._skip_rawtext(name, pos, end)
+            self._finish_head_reentry()
+            return pos
         if action is not None and action.rawtext_as_text:
-            return self._parse_rawtext_as_text(name, pos, end)
+            pos = self._parse_rawtext_as_text(name, pos, end)
+            self._finish_head_reentry()
+            return pos
         if (
             name == "noscript"
             and name not in self._rawtext_element_tags
@@ -5389,13 +5375,7 @@ class ParseEngine:
         if not text:  # pragma: no branch - opposite edge requires invalid parser state
             return pos  # pragma: no cover - unreachable after parser-state guards
         parent: Node
-        if (
-            not self._fragment
-            and name in _HEAD_CONTENT_TAGS
-            and not self._body_explicit
-            and not self._body_has_content()
-            and self._head is not None
-        ):
+        if self._raw_head_text_parent(name) and self._head is not None:
             parent = self._head
         else:
             parent = self._current_parent()
@@ -5432,6 +5412,7 @@ class ParseEngine:
         if name not in self._allowed_tags:
             if text:
                 self._append(self._current_parent(), self._new_text(text, text_start))
+            self._finish_head_reentry()
             return pos
 
         parent: Node

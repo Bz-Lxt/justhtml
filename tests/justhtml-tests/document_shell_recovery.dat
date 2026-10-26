@@ -535,3 +535,134 @@
 |     "&#32;"
 |     <title>
 |       "t"
+
+#data
+<head></head>  x
+#errors
+#document
+| <html>
+|   <head>
+|   "  "
+|   <body>
+|     "x"
+
+#data
+</head>
+<!--c--> x
+#errors
+#document
+| <html>
+|   <head>
+|   "
+"
+|   <!-- c -->
+|   " "
+|   <body>
+|     "x"
+
+#data
+<head></head>&#32;x
+#errors
+#document
+| <html>
+|   <head>
+|   " "
+|   <body>
+|     "x"
+
+#data
+<head></head> &#32;x
+#errors
+#document
+| <html>
+|   <head>
+|   "  "
+|   <body>
+|     "x"
+
+#data
+<head></head>&#xA;\x0d
+&Tab;x
+#errors
+#document
+| <html>
+|   <head>
+|   "
+
+	"
+|   <body>
+|     "x"
+
+#data
+<head></head>&#32;<title>t</title> x
+#errors
+#document
+| <html>
+|   <head>
+|     <title>
+|       "t"
+|   "  "
+|   <body>
+|     "x"
+
+#data
+</head>
+<!--c--> &#32;x
+#errors
+#document
+| <html>
+|   <head>
+|   "
+"
+|   <!-- c -->
+|   "  "
+|   <body>
+|     "x"
+
+#data
+<head></head> &#0;
+#errors
+#document
+| <html>
+|   <head>
+|   " "
+|   <body>
+|     "�"
+
+#data
+<head></head>&#32;\x00 x
+#errors
+#document
+| <html>
+|   <head>
+|   " "
+|   <body>
+|     " x"
+
+#data
+<head></head>&amp;#32;x
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     "&#32;x"
+
+#data
+<head></head>&#9x
+#errors
+#document
+| <html>
+|   <head>
+|   "	"
+|   <body>
+|     "x"
+
+#data
+<head></head>&#x9a
+#errors
+#document
+| <html>
+|   <head>
+|   <body>
+|     "š"

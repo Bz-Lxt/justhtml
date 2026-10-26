@@ -864,6 +864,47 @@ class TestCountingStack(unittest.TestCase):
 
 
 class TestParserSyntaxAndRecovery(_ParserEngineTestCase):
+    def test_after_head_whitespace_precedes_body_across_sanitization_paths(self) -> None:
+        whitespace_cases = (("  ", "  "), ("&#32;", " "), (" &#x020;", "  "), ("&#9", "\t"), ("&NewLine;", "\n"))
+        for prefix in ("<head></head>", "</head>"):
+            for whitespace, decoded in whitespace_cases:
+                source = f"{prefix}{whitespace}x"
+                expected = f"<html><head></head>{decoded}<body>x</body></html>"
+                for transforms in (None, [Sanitize()]):
+                    with self.subTest(source=source, transforms=transforms):
+                        document = self.assert_parses_to(
+                            source, expected, transforms=transforms, track_node_locations=True
+                        )
+                        assert document.query("body")[0].children[0].origin_location == (1, len(source))
+                raw = JustHTML(source, sanitize=False)
+                sanitize_dom(raw.root)
+                assert raw.to_html(pretty=False) == expected
+
+    def test_after_head_whitespace_keeps_head_reentry_available(self) -> None:
+        source = "<head></head>&#32;<title>t</title> &#32;x"
+        expected = "<html><head><title>t</title></head>   <body>x</body></html>"
+        self.assert_parses_to(source, expected)
+        self.assert_parses_to(source, expected, transforms=[Sanitize()])
+
+    def test_after_head_rawtext_recovery_agrees_across_sanitization_paths(self) -> None:
+        for tag in ("title", "style", "script", "noframes", "noscript"):
+            for scripting_enabled in (True, False):
+                source = f"<head></head>&#32;<{tag}>t</{tag}> &#32;x"
+                with self.subTest(tag=tag, scripting_enabled=scripting_enabled):
+                    raw = JustHTML(source, sanitize=False, scripting_enabled=scripting_enabled)
+                    assert raw.query("body")[0].children[-1].data == ("  x" if tag == "noscript" else "x")
+                    sanitize_dom(raw.root)
+                    expected = raw.to_html(pretty=False)
+                    self.assert_parses_to(source, expected, scripting_enabled=scripting_enabled)
+                    self.assert_parses_to(
+                        source, expected, scripting_enabled=scripting_enabled, transforms=[Sanitize()]
+                    )
+
+    def test_document_whitespace_recovery_does_not_apply_to_fragments(self) -> None:
+        source = "</head>&#32;\0 x"
+        for transforms in (None, [Sanitize()]):
+            self.assert_parses_to(source, "  x", fragment=True, transforms=transforms)
+
     def test_leading_null_implies_body_across_sanitization_paths(self) -> None:
         for prefix in ("", "<!doctype html>", "<html>", "<head>", "<head><noscript>"):
             for whitespace in (" ", "&#32;", "&#x020;", "&#9", "&Tab;", "&NewLine;"):

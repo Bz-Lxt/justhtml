@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Process a leading NUL through document and head recovery before discarding it in the body, including text mixed with character references. Preserve following body whitespace, head-element placement, and text source locations.
+- Keep whitespace after `</head>` under `<html>` until body content begins, including encoded whitespace and whitespace followed by other text in the same token.
 
 ## [3.15.0] - 2026-10-24
 
