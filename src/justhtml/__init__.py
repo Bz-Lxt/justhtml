@@ -12,7 +12,7 @@ from .dom import (
     Text,
 )
 from .parser import JustHTML, StrictModeError
-from .parser.stream import stream
+from .parser.stream import HTMLStream, StreamEvent, stream
 from .sanitizer import (
     CSS_PRESET_TEXT,
     DEFAULT_DOCUMENT_POLICY,
@@ -75,6 +75,7 @@ __all__ = [
     "Empty",
     "Escape",
     "HTMLContext",
+    "HTMLStream",
     "JustHTML",
     "Linkify",
     "MergeAttrs",
@@ -89,6 +90,7 @@ __all__ = [
     "SelectorError",
     "SetAttrs",
     "Stage",
+    "StreamEvent",
     "StrictModeError",
     "Template",
     "Text",

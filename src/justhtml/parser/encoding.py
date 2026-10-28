@@ -9,7 +9,23 @@ Outputs are a decoded Unicode string and the chosen encoding name.
 
 from __future__ import annotations
 
+import codecs
+
 _ASCII_WHITESPACE: set[int] = {0x09, 0x0A, 0x0C, 0x0D, 0x20}
+
+# Same bound as the prescan's hard cap: once this many bytes are available the
+# encoding determination is final even with no BOM/transport/meta signal.
+ENCODING_PRESCAN_HARD_LIMIT = 65536
+
+_CODEC_NAMES = {
+    "utf-8": "utf-8",
+    "windows-1252": "cp1252",
+    "iso-8859-2": "iso8859-2",
+    "euc-jp": "euc_jp",
+    "utf-16": "utf-16",
+    "utf-16le": "utf-16le",
+    "utf-16be": "utf-16be",
+}
 
 
 def _ascii_lower(b: int) -> int:
@@ -362,6 +378,67 @@ def sniff_html_encoding(data: bytes, transport_encoding: str | None = None) -> t
     return "windows-1252", 0
 
 
+def _sniff_partial_bom(data: bytes) -> tuple[str | None, int, bool]:
+    """Return (encoding, bom_len, wait_for_more) for a growing byte prefix."""
+    n = len(data)
+    if n == 0:
+        return None, 0, True
+    first = data[0]
+    if first == 0xEF:
+        if n < 2:
+            return None, 0, True
+        if data[1] == 0xBB:
+            if n < 3:
+                return None, 0, True
+            if data[2] == 0xBF:
+                return "utf-8", 3, False
+        return None, 0, False
+    if first in (0xFF, 0xFE):
+        if n < 2:
+            return None, 0, True
+        if first == 0xFF and data[1] == 0xFE:
+            return "utf-16le", 2, False
+        if first == 0xFE and data[1] == 0xFF:
+            return "utf-16be", 2, False
+    return None, 0, False
+
+
+def sniff_html_encoding_prefix(data: bytes, transport_encoding: str | None = None) -> tuple[str | None, int]:
+    """Incremental counterpart of sniff_html_encoding.
+
+    Examines a byte prefix that may grow as chunks arrive. Returns
+    (encoding, bom_len) once the encoding is determined, or (None, 0) while
+    more bytes may change the answer. The result is final as soon as an
+    encoding is returned: BOM/transport/meta precedence matches the one-shot
+    sniffer, and once the 64 KiB prescan budget is exhausted the default
+    windows-1252 is returned.
+    """
+    bom_enc, bom_len, wait = _sniff_partial_bom(data)
+    if wait and bom_enc is None:
+        return None, 0
+    if bom_enc:
+        return bom_enc, bom_len
+
+    transport = normalize_encoding_label(transport_encoding)
+    if transport:
+        return transport, 0
+
+    meta_enc = _prescan_for_meta_charset(data)
+    if meta_enc:
+        return meta_enc, 0
+
+    if len(data) >= ENCODING_PRESCAN_HARD_LIMIT:
+        return "windows-1252", 0
+
+    return None, 0
+
+
+def make_incremental_decoder(encoding: str) -> codecs.IncrementalDecoder:
+    """Create a stateful decoder producing the same output as decode_html."""
+    codec = _CODEC_NAMES.get(encoding, "cp1252")
+    return codecs.getincrementaldecoder(codec)(errors="replace")
+
+
 def decode_html(data: bytes, transport_encoding: str | None = None) -> tuple[str, str]:
     """Decode an HTML byte stream using HTML encoding sniffing.
 
@@ -370,37 +447,9 @@ def decode_html(data: bytes, transport_encoding: str | None = None) -> tuple[str
     enc, bom_len = sniff_html_encoding(data, transport_encoding=transport_encoding)
 
     # Allowlist supported decoders.
-    if enc not in {
-        "utf-8",
-        "windows-1252",
-        "iso-8859-2",
-        "euc-jp",
-        "utf-16",
-        "utf-16le",
-        "utf-16be",
-    }:  # pragma: no cover
+    if enc not in _CODEC_NAMES:  # pragma: no cover
         enc = "windows-1252"
         bom_len = 0
 
     payload = data[bom_len:] if bom_len else data
-
-    if enc == "windows-1252":
-        return payload.decode("cp1252", "replace"), "windows-1252"
-
-    if enc == "iso-8859-2":
-        return payload.decode("iso-8859-2", "replace"), "iso-8859-2"
-
-    if enc == "euc-jp":
-        return payload.decode("euc_jp", "replace"), "euc-jp"
-
-    if enc == "utf-16le":
-        return payload.decode("utf-16le", "replace"), "utf-16le"
-
-    if enc == "utf-16be":
-        return payload.decode("utf-16be", "replace"), "utf-16be"
-
-    if enc == "utf-16":
-        return payload.decode("utf-16", "replace"), "utf-16"
-
-    # Default utf-8
-    return payload.decode("utf-8", "replace"), "utf-8"
+    return payload.decode(_CODEC_NAMES[enc], "replace"), enc

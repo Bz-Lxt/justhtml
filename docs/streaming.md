@@ -33,6 +33,73 @@ end body
 end html
 ```
 
+## Incremental Chunked Input
+
+For documents that arrive in pieces (socket reads, file chunks, generator pipelines), pass any iterable of chunks to `stream()`. The chunks are parsed as they arrive without ever joining the full document; only the unfinished construct at a chunk edge is retained, so memory stays bounded regardless of document size.
+
+All chunks must be the same type: either all `str` or all bytes-like (`bytes`, `bytearray`, `memoryview`).
+
+```python
+from justhtml import stream
+
+chunks = ["<p>Hel", "lo</p>", "<!-- ok -->"]
+for event, data in stream(chunks):
+    print(event, data)
+```
+
+<!-- justhtml: output -->
+```text
+start ('p', {})
+text Hel
+text lo
+end p
+comment  ok 
+```
+
+The event stream is equivalent to parsing the concatenated input. The only difference is that a single text node may be delivered as several consecutive `"text"` events whose contents concatenate to the same string.
+
+Constructs split across chunk boundaries are handled transparently: encoding detection (BOM, meta charset, transport encoding), tags and attributes, character references, comments, CDATA sections, raw-text elements (`script`, `style`, `textarea`, `plaintext`), script-data escape states, CRLF normalization, and SVG/MathML foreign-content boundaries.
+
+### Push API: `HTMLStream`
+
+When chunks arrive through callbacks rather than an iterable, use `HTMLStream` directly. `feed()` yields every event that is already definitive, and `finish()` flushes the remaining events at end of input:
+
+```python
+from justhtml import HTMLStream
+
+parser = HTMLStream()
+for chunk in read_chunks():
+    for event, data in parser.feed(chunk):
+        handle(event, data)
+for event, data in parser.finish():
+    handle(event, data)
+```
+
+With bytes chunks, encoding sniffing runs incrementally. The chosen encoding is exposed on the `encoding` attribute as soon as it is known (`None` before that), and a split multibyte sequence at the end of a chunk is buffered until the rest arrives:
+
+```python
+from justhtml import HTMLStream
+
+parser = HTMLStream()
+events = list(parser.feed(b"\xef\xbb\xbf<p>caf"))
+events += list(parser.feed(b"\xc3\xa9</p>"))
+events += list(parser.finish())
+print(parser.encoding)
+for event, data in events:
+    print(event, data)
+```
+
+<!-- justhtml: output -->
+```text
+utf-8
+start ('p', {})
+text caf
+text é
+end p
+```
+
+Pass `encoding="..."` to skip sniffing when the transport encoding is already known. Feeding a chunk of a different type than the first chunk, or feeding after `finish()`, raises `TypeError`/`RuntimeError`.
+
 ## Byte Input and Encodings
 
 `stream()` also accepts bytes (`bytes`, `bytearray`, `memoryview`). In that case, the input is decoded using HTML encoding sniffing (including a `windows-1252` fallback for legacy documents).

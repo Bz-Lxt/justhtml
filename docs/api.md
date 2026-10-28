@@ -596,15 +596,52 @@ for event, data in stream(html):
 `stream()` accepts the same input types as `JustHTML`. If you pass bytes, it will decode using HTML encoding sniffing.
 To override the encoding for byte input, pass `encoding=...`.
 
+Instead of a complete document, `stream()` also accepts an iterable of same-type chunks (`str`, or `bytes`/`bytearray`/`memoryview`). Chunks are parsed incrementally without joining the full input; see [Streaming API](streaming.md) for details.
+
 ### Events
 
 | Event | Data | Description |
 |-------|------|-------------|
 | `"start"` | `(tag_name, attrs_dict)` | Opening tag |
 | `"end"` | `tag_name` | Closing tag |
-| `"text"` | `text_content` | Text content |
+| `"text"` | `text_content` | Text content (consecutive events may split one text node across chunk boundaries) |
 | `"comment"` | `comment_text` | HTML comment |
 | `"doctype"` | `(name, public_id, system_id)` | DOCTYPE declaration fields |
+
+---
+
+## HTMLStream
+
+Incremental push counterpart of `stream()` for chunks that arrive through callbacks.
+
+```python
+from justhtml import HTMLStream
+```
+
+### Constructor
+
+```python
+HTMLStream(encoding=None)
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `encoding` | `str \| None` | `None` | Transport encoding; when set, byte chunks decode with it immediately instead of sniffing |
+
+### Methods
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `feed(chunk)` | generator of events | Feed one `str` or bytes-like chunk and yield every definitive event |
+| `finish()` | generator of events | Signal end of input and flush remaining events; later calls yield nothing |
+
+### Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `encoding` | `str \| None` | The sniffed encoding name, or `None` until the byte prefix determines it |
+
+All chunks must share one type; mixing `str` with bytes-like chunks raises `TypeError`, and feeding after `finish()` raises `RuntimeError`.
 
 ---
 

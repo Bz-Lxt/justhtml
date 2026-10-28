@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+from typing import Literal
+
+# Script-data escape states, matching the state tracked by find_script_end_tag.
+ScriptState = Literal["data", "escaped", "double-escaped"]
+
+SCRIPT_STATE_DATA: ScriptState = "data"
+SCRIPT_STATE_ESCAPED: ScriptState = "escaped"
+SCRIPT_STATE_DOUBLE_ESCAPED: ScriptState = "double-escaped"
+
 SPACE = " \t\n\f\r"
 TAG_NAME_STOP = "\t\n\f />"
 # In the HTML attribute-name state, quotes, apostrophes, "<", and NUL are
@@ -179,3 +188,154 @@ def find_script_start_marker(html: str, pos: int, end: int, text_end: int) -> in
         if after_name >= text_end or html[after_name] in TAG_END_NAME_STOP:
             return start
         search = after_name
+
+
+def ascii_prefix_match(html: str, needle: str, start: int, end: int) -> bool:
+    """Whether html[start:end] is a case-insensitive ASCII prefix of needle.
+
+    Unlike ascii_startswith, this also matches when the buffer ends in the
+    middle of the needle (needed while a CDATA section opener is split across
+    chunks).
+    """
+    if start >= end:
+        return False
+    available = end - start
+    if available >= len(needle):
+        candidate = html[start : start + len(needle)]
+    else:
+        candidate = html[start:end]
+    return candidate.isascii() and candidate.lower() == needle[: len(candidate)].lower()
+
+
+def scan_rawtext_data(html: str, name: str, pos: int, end: int) -> tuple[str, int, int, int]:
+    """Resumable rawtext/RCDATA end-tag scan over html[pos:end].
+
+    Return shapes:
+      ("close", close_pos, after_close, 0)
+      ("hold", safe_end, pseudo_close, 0)
+
+    "hold" means no terminating end tag is visible yet. Everything before
+    safe_end is definitive text; html[safe_end:] must be retained and rescanned
+    after the next chunk. pseudo_close is the start of a pseudo end tag (name
+    terminated by a STOP character without a following ">") that is dropped at
+    true EOF, or -1 when no such candidate is pending.
+    """
+    needle = f"</{name}"
+    search = pos
+    while True:
+        close = ascii_find(html, needle, search, end)
+        if close == -1:
+            last_lt = html.rfind("<", pos, end)
+            return "hold", last_lt if last_lt != -1 else end, -1, 0
+        after_name = close + len(needle)
+        if after_name < end and html[after_name] not in TAG_END_NAME_STOP:
+            search = after_name
+            continue
+        tag_end = find_tag_end(html, after_name, end)
+        if tag_end != -1:
+            return "close", close, tag_end + 1, 0
+        # A STOP character terminated the name but no ">" follows (pseudo
+        # candidate, dropped at EOF); or the bare "</name" ends the buffer and
+        # stays text at EOF but must be retained incrementally.
+        return "hold", close, close if after_name < end else -1, 0
+
+
+def _script_hold(
+    html: str,
+    pos: int,
+    end: int,
+    search: int,
+    state: ScriptState,
+    pseudo_close: int | None,
+) -> tuple[str, int, int, int]:
+    # Hold back a possible "<" opener and, inside escape states, a trailing
+    # "-" or "--" that could become the end of a comment marker.
+    hold = end
+    if state != SCRIPT_STATE_DATA:
+        dashes = 0
+        while dashes < 2 and hold - dashes > search and html[hold - 1 - dashes] == "-":
+            dashes += 1
+        hold -= dashes
+    bound = pseudo_close if pseudo_close is not None else end
+    last_lt = html.rfind("<", search, bound)
+    if last_lt != -1 and last_lt < hold:
+        hold = last_lt
+    # The hold position must never move past a pending pseudo candidate: the
+    # whole candidate has to be rescanned after more bytes arrive.
+    if pseudo_close is not None and hold > pseudo_close:
+        hold = pseudo_close
+    return (
+        "hold",
+        hold,
+        pseudo_close if pseudo_close is not None else -1,
+        _script_state_id(state),
+    )
+
+
+def _script_state_id(state: ScriptState) -> int:
+    if state == SCRIPT_STATE_ESCAPED:
+        return 1
+    if state == SCRIPT_STATE_DOUBLE_ESCAPED:
+        return 2
+    return 0
+
+
+def scan_script_data(
+    html: str, pos: int, end: int, state: ScriptState = SCRIPT_STATE_DATA
+) -> tuple[str, int, int, int]:
+    """Resumable counterpart of find_script_end_tag.
+
+    Return shapes:
+      ("close", close_pos, after_close, 0)
+      ("hold", safe_end, pseudo_close, state_id)
+
+    safe_end bounds definitive script text; html[safe_end:] is rescanned after
+    more bytes arrive. pseudo_close is the start of a pseudo end tag (name
+    terminated without a following ">") that is dropped at true EOF, or -1.
+    state_id (see _script_state_id) is the escape state in effect when the
+    scan resumes at html[safe_end]. Callers that retain text before safe_end
+    (e.g. a dangling CR) must resume in SCRIPT_STATE_DATA because the retained
+    prefix re-enters the escape states deterministically.
+    """
+    search = pos
+    while True:
+        close, next_pos = find_rawtext_end_tag(html, "script", search, end)
+        terminated = close is not None and (next_pos < end or html[end - 1] == ">")
+        if state == SCRIPT_STATE_DATA:
+            bound = close if close is not None else end
+            marker = html.find("<!--", search, bound)
+            if marker != -1 and (close is None or marker < close):
+                state = SCRIPT_STATE_ESCAPED
+                search = marker + 2
+                continue
+            if terminated and close is not None:
+                return "close", close, next_pos, 0
+            return _script_hold(html, pos, end, search, state, close)
+
+        bound = close if close is not None else end
+        comment_end = html.find("-->", search, bound)
+        script_start = find_script_start_marker(html, search, bound, end) if state == SCRIPT_STATE_ESCAPED else -1
+        if comment_end != -1 and (
+            state == SCRIPT_STATE_DOUBLE_ESCAPED or script_start == -1 or comment_end < script_start
+        ):
+            state = SCRIPT_STATE_DATA
+            search = comment_end + 3
+            continue
+        if script_start != -1:
+            state = SCRIPT_STATE_DOUBLE_ESCAPED
+            search = script_start + 7
+            continue
+        if terminated and close is not None:
+            if state == SCRIPT_STATE_ESCAPED:
+                return "close", close, next_pos, 0
+            later_end = ascii_find(html, "</script", close + 8, next_pos)
+            if later_end != -1:
+                after_name = later_end + 8
+                if after_name >= end or html[after_name] in TAG_END_NAME_STOP:
+                    state = SCRIPT_STATE_ESCAPED
+                    search = close + 8
+                    continue
+            state = SCRIPT_STATE_ESCAPED
+            search = next_pos
+            continue
+        return _script_hold(html, pos, end, search, state, close)

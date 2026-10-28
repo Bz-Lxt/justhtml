@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `stream()` now accepts an iterable of same-type chunks (`str`, or `bytes`/`bytearray`/`memoryview`) and parses them incrementally without joining the full input, emitting events equivalent to a parse of the concatenated document (consecutive text events may split at chunk boundaries). The new `HTMLStream` class provides the matching push API (`feed()`/`finish()`, plus an `encoding` property), with cross-chunk handling of encoding sniffing, tags, character references, comments, CDATA sections, raw-text elements and script escape states, CRLF normalization, and SVG/MathML foreign-content boundaries.
+
 ## [3.13.1] - 2026-10-12
 
 ### Fixed

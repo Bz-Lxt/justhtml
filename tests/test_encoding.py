@@ -2,7 +2,14 @@ import unittest
 
 from justhtml import JustHTML
 from justhtml.parser import encoding as enc
-from justhtml.parser.encoding import decode_html, normalize_encoding_label, sniff_html_encoding
+from justhtml.parser.encoding import (
+    ENCODING_PRESCAN_HARD_LIMIT,
+    decode_html,
+    make_incremental_decoder,
+    normalize_encoding_label,
+    sniff_html_encoding,
+    sniff_html_encoding_prefix,
+)
 from justhtml.parser.options import ParserOptions
 from justhtml.parser.stream import stream
 
@@ -174,6 +181,74 @@ class TestEncoding(unittest.TestCase):
     def test_stream_replaces_undefined_windows_1252_bytes(self):
         events = list(stream(b"<p>ok\x81</p>"))
         self.assertIn(("text", "ok\ufffd"), events)
+
+
+class TestIncrementalEncodingSniffing(unittest.TestCase):
+    def test_prefix_pending_while_bom_is_incomplete(self):
+        self.assertEqual(sniff_html_encoding_prefix(b""), (None, 0))
+        self.assertEqual(sniff_html_encoding_prefix(b"\xef"), (None, 0))
+        self.assertEqual(sniff_html_encoding_prefix(b"\xef\xbb"), (None, 0))
+        self.assertEqual(sniff_html_encoding_prefix(b"\xff"), (None, 0))
+        self.assertEqual(sniff_html_encoding_prefix(b"\xfe"), (None, 0))
+
+    def test_prefix_resolves_complete_boms(self):
+        self.assertEqual(sniff_html_encoding_prefix(b"\xef\xbb\xbf<p>"), ("utf-8", 3))
+        self.assertEqual(sniff_html_encoding_prefix(b"\xff\xfe<p>"), ("utf-16le", 2))
+        self.assertEqual(sniff_html_encoding_prefix(b"\xfe\xff<p>"), ("utf-16be", 2))
+
+    def test_prefix_abandons_false_bom_then_keeps_sniffing(self):
+        # 0xEF not followed by the BOM bytes is plain data; a later meta tag
+        # may still determine the encoding, and a short prefix stays pending.
+        self.assertEqual(sniff_html_encoding_prefix(b"\xefA"), (None, 0))
+        self.assertEqual(sniff_html_encoding_prefix(b"\xefA<meta charset=utf-8>"), ("utf-8", 0))
+        # Likewise a two-byte 0xEF 0xBB not followed by 0xBF.
+        self.assertEqual(sniff_html_encoding_prefix(b"\xef\xbbX"), (None, 0))
+        # An initial 0xFF that is not the little-endian BOM is plain data.
+        self.assertEqual(sniff_html_encoding_prefix(b"\xff\x00"), (None, 0))
+
+    def test_prefix_transport_encoding_wins_immediately(self):
+        self.assertEqual(
+            sniff_html_encoding_prefix(b"abc", transport_encoding="iso-8859-2"),
+            ("iso-8859-2", 0),
+        )
+
+    def test_prefix_meta_charset(self):
+        self.assertEqual(sniff_html_encoding_prefix(b"<meta charset='utf-8'><p>"), ("utf-8", 0))
+
+    def test_prefix_defaults_once_prescan_budget_is_exhausted(self):
+        pending = b"a" * (ENCODING_PRESCAN_HARD_LIMIT - 1)
+        self.assertEqual(sniff_html_encoding_prefix(pending), (None, 0))
+        decided = b"a" * ENCODING_PRESCAN_HARD_LIMIT
+        self.assertEqual(sniff_html_encoding_prefix(decided), ("windows-1252", 0))
+
+
+class TestIncrementalDecoders(unittest.TestCase):
+    def test_every_supported_codec_decodes_across_calls(self):
+        cases = {
+            "utf-8": (b"\xc3\xa9", "\u00e9"),
+            "windows-1252": (b"\xe9", "\u00e9"),
+            "iso-8859-2": (b"\xe9", "\u00e9"),
+            "euc-jp": (b"\xa4\xb3", "\u3053"),
+            "utf-16le": (b"h\x00", "h"),
+            "utf-16be": (b"\x00h", "h"),
+        }
+        for encoding, (raw, expected) in cases.items():
+            with self.subTest(encoding=encoding):
+                decoder = make_incremental_decoder(encoding)
+                # Feed one byte at a time; multibyte sequences must be buffered.
+                decoded = "".join(decoder.decode(raw[i : i + 1]) for i in range(len(raw)))
+                decoded += decoder.decode(b"", final=True)
+                self.assertEqual(decoded, expected)
+
+    def test_unknown_encoding_falls_back_to_windows_1252(self):
+        decoder = make_incremental_decoder("totally-made-up")
+        self.assertEqual(decoder.decode(b"\xe9"), "\u00e9")
+
+    def test_utf16_native_label_uses_stateful_decoder(self):
+        decoder = make_incremental_decoder("utf-16")
+        first = decoder.decode(b"\xff\xfeh\x00i\x00")
+        second = decoder.decode(b"!\x00", final=False)
+        self.assertEqual(first + second, "hi!")
 
 
 if __name__ == "__main__":
