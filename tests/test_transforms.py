@@ -204,6 +204,40 @@ class TestTransforms(unittest.TestCase):
         doc = JustHTML("<p>ok</p><script>alert(1)</script>", transforms=[Drop("script")])
         assert doc.to_html(pretty=False) == "<html><head></head><body><p>ok</p></body></html>"
 
+    def test_is_where_selector_targets_share_matcher_semantics(self) -> None:
+        doc = JustHTML(
+            "<h2>T</h2><p>a</p><p>b</p>",
+            fragment=True,
+            transforms=[SetAttrs(":is(h2, p)", **{"data-hit": "1"})],
+        )
+        html = doc.to_html(pretty=False)
+        assert html.count("data-hit") == 3
+
+    def test_has_relative_selector_targets_share_matcher_semantics(self) -> None:
+        doc = JustHTML(
+            "<div class='card'><h2>T</h2></div><div class='plain'><b>x</b></div>",
+            fragment=True,
+            transforms=[SetAttrs("div:has(> h2)", **{"data-card": "1"})],
+        )
+        html = doc.to_html(pretty=False)
+        assert 'class="card" data-card="1"' in html
+        assert 'class="plain"' in html
+        assert "plain" in html and html.count("data-card") == 1
+
+    def test_drop_relative_has_selector(self) -> None:
+        doc = JustHTML(
+            "<ul><li>1</li><li>2</li><li>3</li></ul>",
+            fragment=True,
+            transforms=[Drop("li:has(+ li)")],
+        )
+        assert doc.to_html(pretty=False) == "<ul><li>3</li></ul>"
+
+    def test_compile_rejects_invalid_selector_arguments(self) -> None:
+        with self.assertRaisesRegex(SelectorError, "Unsupported pseudo-class"):
+            compile_transforms([SetAttrs("div:has(:bogus)", id="x")])
+        with self.assertRaisesRegex(SelectorError, "requires a selector"):
+            compile_transforms([Drop("div:has()")])
+
     def test_unwrap_hoists_children(self) -> None:
         doc = JustHTML("<p>Hello <span>world</span></p>", transforms=[Unwrap("span")])
         assert doc.to_html(pretty=False) == "<html><head></head><body><p>Hello world</p></body></html>"

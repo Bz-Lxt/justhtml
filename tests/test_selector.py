@@ -18,6 +18,7 @@ from justhtml.selector import (
     Token,
     TokenType,
     _is_simple_tag_selector,
+    _parse_selector,
     _parse_selector_cached,
     _query_descendants,
     _query_descendants_tag,
@@ -395,6 +396,15 @@ class TestDescendantCombinator(SelectorTestCase):
         result = query(self.get_simple_doc(), "span div")
         assert len(result) == 0
 
+    def test_descendant_same_compound_nested(self):
+        # A negative ancestor-cache entry for an outer div must not hide it
+        # from matching inner divs during tree traversal.
+        doc = JustHTML(
+            "<div><h2>T</h2><div><p>deep</p></div></div>"
+        ).root
+        assert len(query(doc, "div div")) == 1
+        assert [n.name for n in query(doc, "div p")] == ["p"]
+
 
 class TestChildCombinator(SelectorTestCase):
     """Test child combinator (>)."""
@@ -519,6 +529,293 @@ class TestNot(SelectorTestCase):
     def test_not_with_combinator(self):
         result = query(self.get_simple_doc(), "div > p:not(.content)")
         assert len(result) == 1
+
+
+class TestIsWherePseudo(SelectorTestCase):
+    """Test the composable :is() and :where() pseudo-classes."""
+
+    def test_is_matches_any_selector_in_list(self):
+        result = query(self.get_simple_doc(), ":is(p, a)")
+        assert [n.name for n in result] == ["p", "p", "a"]
+
+    def test_is_single_selector(self):
+        result = query(self.get_simple_doc(), ":is(p.content)")
+        assert len(result) == 1
+        assert result[0].attrs["class"] == "content"
+
+    def test_where_matches_like_is(self):
+        assert [n.name for n in query(self.get_simple_doc(), ":where(p, a)")] == ["p", "p", "a"]
+
+    def test_is_combines_with_subject_compound(self):
+        # The subject must both be a p and match an :is entry.
+        result = query(self.get_simple_doc(), "p:is(.intro, .special)")
+        assert len(result) == 1
+        assert result[0].attrs["class"] == "intro first"
+
+    def test_is_chains_with_descendant_combinator(self):
+        result = query(self.get_simple_doc(), "div:is(#main) :is(li.special, a)")
+        assert len(result) == 1
+        assert result[0].name == "li"
+
+    def test_nested_is_where_not(self):
+        result = query(self.get_simple_doc(), ":is(div, p):is(.container)")
+        assert {n.attrs.get("id") for n in result} == {"main", "sidebar"}
+
+        result = query(self.get_simple_doc(), "h1:is(:where(h1, h2, h3))")
+        assert len(result) == 1
+
+        result = query(self.get_simple_doc(), "p:is(:not(.intro))")
+        assert len(result) == 1
+        assert result[0].attrs["class"] == "content"
+
+    def test_is_uses_and_semantics_across_pseudos(self):
+        # Both :is conditions must hold for the same subject.
+        assert query(self.get_simple_doc(), ":is(h1, p):is(.intro, .content)")
+        assert not query(self.get_simple_doc(), ":is(h1, p):is(.intro):is(.content)")
+
+    def test_forgiving_list_ignores_invalid_entries(self):
+        result = query(self.get_simple_doc(), ":is(p, :bogus, a)")
+        assert [n.name for n in result] == ["p", "p", "a"]
+
+        # Malformed functional syntax is forgiven instead of failing the list.
+        result = query(self.get_simple_doc(), ":where(p, [attr=, a)")
+        assert [n.name for n in result] == ["p", "p"]
+
+        # Empty entries are dropped.
+        assert [n.name for n in query(self.get_simple_doc(), ":is(p,,a)")] == ["p", "p", "a"]
+
+    def test_empty_is_where_lists_match_nothing(self):
+        assert query(self.get_simple_doc(), ":is()") == []
+        assert query(self.get_simple_doc(), ":where()") == []
+        assert query(self.get_simple_doc(), "p:is()") == []
+        assert query(self.get_simple_doc(), "p:where(:bogus)") == []
+
+    def test_relative_leading_combinator_inside_is(self):
+        doc = self.get_sibling_doc()
+        # Subjects whose next element sibling is a p.
+        result = query(doc, "p:is(+ p)")
+        assert [n.attrs.get("class") for n in result] == ["first", "second"]
+
+        # Subjects with a p somewhere among following siblings (span is skipped).
+        result = query(doc, "p:where(~ p)")
+        assert [n.attrs.get("class") for n in result] == ["first", "second", "third"]
+
+        # Subjects that directly contain a p child.
+        assert [n.name for n in query(doc, "div:is(> p)")] == ["div"]
+
+    def test_is_relative_chain_stays_in_subject_scope(self):
+        doc = JustHTML(
+            "<div><h2>T</h2><div><p>deep</p></div></div>"
+        ).root
+        # > p only matches the inner div, which directly contains p; the
+        # outer subject must not match through a descendant boundary.
+        direct = query(doc, "div:is(> p)")
+        assert direct == query(doc, "div div")
+        # :is() without a leading combinator still tests the subject itself,
+        # not its descendants.
+        assert query(doc, "div:is(div p)") == []
+        # Containment is expressed with :has and is scope-bounded.
+        assert query(doc, "div:has(> p)") == query(doc, "div div")
+        assert len(query(doc, "div:has(div p)")) == 1
+        # Child axes cannot climb back out of the subject subtree.
+        assert query(doc, "p:is(> h2)") == []
+
+    def test_is_comment_permits_non_element_subjects(self):
+        doc = self.get_comment_doc()
+        comments = query(doc, ":is(:comment)")
+        assert len(comments) == 3
+        assert all(n.name == "#comment" for n in comments)
+
+        assert query(doc, "div:where(:comment)") == []
+
+    def test_is_parsed_as_selector_list_ast(self):
+        ast = parse_selector(":is(div, p)")
+        pseudo = ast.parts[0][1].selectors[0]
+        assert pseudo.name == "is"
+        assert isinstance(pseudo.parsed_arg, SelectorList)
+        assert len(pseudo.parsed_arg.selectors) == 2
+
+        ast = parse_selector(":where(div, p)")
+        pseudo = ast.parts[0][1].selectors[0]
+        assert isinstance(pseudo.parsed_arg, SelectorList)
+        assert len(pseudo.parsed_arg.selectors) == 2
+
+        ast = parse_selector(":where(div)")
+        pseudo = ast.parts[0][1].selectors[0]
+        assert isinstance(pseudo.parsed_arg, SelectorList)
+        assert pseudo.parsed_arg.selectors[0].parts[0][1].selectors[0].name == "div"
+
+    def test_is_dedupes_equivalent_entries(self):
+        ast = parse_selector(":is(p, p, p)")
+        assert len(ast.parts[0][1].selectors[0].parsed_arg.selectors) == 1
+
+    def test_matches_function_shares_is_where_semantics(self):
+        doc = self.get_sibling_doc()
+        first_p = query(doc, "p.first")[0]
+        assert matches(first_p, "p:is(+ p)")
+        assert matches(first_p, ":where(p.first)")
+        assert not matches(first_p, "p:is(+ span)")
+
+    def test_forgiving_list_drops_whitespace_only_entries(self):
+        # A whitespace-only entry tokenizes to nothing and is dropped instead
+        # of invalidating the surrounding selector.
+        doc = self.get_simple_doc()
+        assert query(doc, ":is( )") == []
+        assert [n.name for n in query(doc, ":is( , p)")] == ["p", "p"]
+
+    def test_forgiving_list_ignores_commas_inside_strings_and_brackets(self):
+        doc = JustHTML('<p title="a,b">x</p><a></a>').root
+        # The comma inside the quoted value does not split the entry.
+        assert [n.name for n in query(doc, ':is([title="a,b"], a)')] == ["p", "a"]
+        # An escaped quote stays inside the quoted value while scanning.
+        assert [n.name for n in query(doc, ':is([title="a\\"b"], a)')] == ["a"]
+
+
+class TestHasPseudo(SelectorTestCase):
+    """Test the relational :has() pseudo-class."""
+
+    def get_has_doc(self):
+        html = """
+        <html><body>
+            <div class="card">
+                <h2>Title</h2>
+                <p>Body</p>
+                <a>Link</a>
+                <div class="inner"><em>nested</em></div>
+            </div>
+            <div class="empty"><b>only</b></div>
+            <ul>
+                <li>1</li>
+                <li>2</li>
+            </ul>
+        </body></html>
+        """
+        return JustHTML(html).root
+
+    def test_has_implicit_descendant_relative_selector(self):
+        doc = self.get_has_doc()
+        result = query(doc, "div:has(em)")
+        assert [n.attrs.get("class") for n in result] == ["card", "inner"]
+
+    def test_has_descendant_chain(self):
+        doc = self.get_has_doc()
+        result = query(doc, "div:has(div em)")
+        assert [n.attrs.get("class") for n in result] == ["card"]
+
+    def test_has_child_combinator(self):
+        doc = self.get_has_doc()
+        result = query(doc, "div:has(> h2)")
+        assert [n.attrs.get("class") for n in result] == ["card"]
+        assert query(doc, ".inner:has(> em)")
+
+    def test_has_adjacent_sibling_combinator(self):
+        doc = self.get_has_doc()
+        assert query(doc, "h2:has(+ p)")
+        assert not query(doc, "h2:has(+ div)")
+        # Only the first li has a following li sibling.
+        assert query(doc, "li:has(+ li)") == query(doc, "li")[:1]
+
+    def test_has_general_sibling_combinator(self):
+        doc = self.get_has_doc()
+        # h2 has both p and a among following siblings.
+        assert query(doc, "h2:has(~ a)")
+        assert query(doc, "h2:has(~ p ~ a)")
+        assert not query(doc, "a:has(~ h2)")
+
+    def test_has_forward_relative_chain(self):
+        doc = self.get_has_doc()
+        # A later sibling div must contain em as descendant and as child,
+        # evaluating the remainder of the chain forward from the first match.
+        assert query(doc, "h2:has(~ div em)")
+        assert query(doc, "h2:has(~ div > em)")
+        # h2's immediately following sibling is p, not div.
+        assert not query(doc, "h2:has(+ div em)")
+        assert not query(doc, ".empty:has(+ div b)")
+
+    def test_has_selector_list(self):
+        doc = self.get_has_doc()
+        result = query(doc, "div:has(h2, b)")
+        assert [n.attrs.get("class") for n in result] == ["card", "empty"]
+
+    def test_has_composes_with_is_and_not(self):
+        doc = self.get_has_doc()
+        result = query(doc, "div:is(.card, .empty):has(a)")
+        assert [n.attrs.get("class") for n in result] == ["card"]
+
+        result = query(doc, "div:not(.empty):has(em)")
+        assert [n.attrs.get("class") for n in result] == ["card", "inner"]
+
+        result = query(doc, "div:is(:has(b))")
+        assert [n.attrs.get("class") for n in result] == ["empty"]
+
+    def test_has_negated_relative_argument(self):
+        doc = self.get_has_doc()
+        # .inner's only element descendant is em, so :not(em) fails there.
+        result = query(doc, "div:has(:not(em))")
+        assert "inner" not in {n.attrs.get("class") for n in result}
+        assert {"card", "empty"} <= {n.attrs.get("class") for n in result}
+
+    def test_has_does_not_escape_subject_axes(self):
+        doc = self.get_has_doc()
+        assert not query(doc, "em:has(+ b)")
+        assert not query(doc, ".inner:has(> h2)")
+        assert not query(doc, "em:has(> b)")
+        assert not query(doc, "b:has(~ div)")
+
+    def test_has_comment_descendant(self):
+        doc = self.get_comment_doc()
+        result = query(doc, "div:has(:comment)")
+        assert len(result) == 1
+
+    def test_has_requires_selector_argument(self):
+        with self.assertRaisesRegex(SelectorError, "requires a selector"):
+            parse_selector("div:has()")
+
+    def test_has_uses_strict_selector_list(self):
+        with self.assertRaisesRegex(SelectorError, "Unsupported pseudo-class"):
+            parse_selector("div:has(:bogus)")
+        with self.assertRaisesRegex(SelectorError, "Unsupported pseudo-class"):
+            parse_selector("div:not(:bogus)")
+
+    def test_matches_function_shares_has_semantics(self):
+        doc = self.get_has_doc()
+        card = query(doc, ".card")[0]
+        assert matches(card, "div:has(> h2)")
+        assert matches(card, ":has(h2 ~ a)")
+        assert not matches(card, "div:has(> b)")
+
+    def test_has_requires_compound_after_leading_combinator(self):
+        with self.assertRaisesRegex(SelectorError, "Expected selector after combinator"):
+            parse_selector("div:has(>)")
+
+    def test_has_forward_child_chain(self):
+        # An earlier child failing the chain does not stop later children.
+        doc = JustHTML("<html><body><div><b></b><p><span>x</span></p></div></body></html>").root
+        assert query(doc, "div:has(> p > span)")
+        # Failing the innermost child axis exhausts the search.
+        doc = JustHTML("<html><body><div><p><b></b><i></i></p></div></body></html>").root
+        assert not query(doc, "div:has(> p > span)")
+
+    def test_has_forward_adjacent_sibling_chain(self):
+        doc = JustHTML("<html><body><div><p></p><span></span></div></body></html>").root
+        assert query(doc, "div:has(> p + span)")
+        assert not query(doc, "div:has(> p + em)")
+
+    def test_has_forward_general_sibling_chain_exhausts(self):
+        doc = JustHTML("<html><body><div><p></p><span></span></div></body></html>").root
+        assert not query(doc, "div:has(> p ~ em)")
+
+    def test_has_searches_subject_template_content(self):
+        # A template element has no regular children; :has scans its
+        # template content fragment as well.
+        doc = JustHTML("<html><body><template><p>x</p></template></body></html>").root
+        assert query(doc, "template:has(p)")
+
+    def test_has_searches_nested_template_content(self):
+        doc = JustHTML(
+            "<html><body><div><template><p>x</p></template></div></body></html>"
+        ).root
+        assert [n.name for n in query(doc, "div:has(p)")] == ["div"]
 
 
 class TestOnlyChild(SelectorTestCase):
@@ -1391,6 +1688,21 @@ class TestParserEdgeCases(SelectorTestCase):
         except SelectorError:
             pass
 
+    def test_parse_standalone_complex_rejects_empty(self):
+        parser = SelectorParser([Token(TokenType.EOF)])
+        with self.assertRaisesRegex(SelectorError, "Empty selector"):
+            parser.parse_standalone_complex()
+
+    def test_parse_standalone_complex_rejects_trailing_token(self):
+        tokens = [
+            Token(TokenType.TAG, "div"),
+            Token(TokenType.ATTR_END, "]"),
+            Token(TokenType.EOF),
+        ]
+        parser = SelectorParser(tokens)
+        with self.assertRaisesRegex(SelectorError, "Unexpected token"):
+            parser.parse_standalone_complex()
+
 
 class TestSelectorAllowNonElements(SelectorTestCase):
     def test_allows_non_elements_unknown_type(self):
@@ -1708,6 +2020,84 @@ class TestAdditionalCoverage(SelectorTestCase):
         compound = CompoundSelector([SimpleSelector(SimpleSelector.TYPE_TAG, name="main")])
 
         assert matcher._closest_matching_ancestor(span, compound, depth=0) is None
+
+    def test_relative_pseudo_axes_on_detached_node(self):
+        matcher = SelectorMatcher()
+        p = query(JustHTML("<p>x</p>", fragment=True).root, "p")[0]
+        p.parent = None
+
+        assert not matcher.matches(p, parse_selector(":has(+ em)"))
+        assert not matcher.matches(p, parse_selector(":has(~ em)"))
+        # A descendant selector cannot anchor above a node without a parent.
+        assert not matcher.matches(p, parse_selector("div p"))
+
+    def test_following_siblings_node_missing_from_parent_index(self):
+        matcher = SelectorMatcher()
+        parent = query(JustHTML("<div><em></em></div>", fragment=True).root, "div")[0]
+        node = JustHTML("<span></span>", fragment=True).root.children[0]
+        node.parent = parent
+
+        assert not matcher.matches(node, parse_selector(":has(~ em)"))
+
+    def test_relative_descendant_scan_skips_revisited_nodes(self):
+        class DummyNode:
+            __slots__ = ("attrs", "children", "name", "namespace", "parent", "template_content")
+
+            def __init__(self, name: str, children: list[object] | None = None) -> None:
+                self.name = name
+                self.namespace = "html"
+                self.children = children or []
+                self.attrs = {}
+                self.parent = None
+                self.template_content = None
+
+        child = DummyNode("b")
+        subject = DummyNode("div", children=[child, child])
+        child.parent = subject
+
+        matcher = SelectorMatcher()
+        assert not matcher.matches(subject, parse_selector("div:has(p)"))
+
+    def test_relative_descendant_scan_handles_empty_template_content(self):
+        class DummyNode:
+            __slots__ = ("attrs", "children", "name", "namespace", "parent", "template_content")
+
+            def __init__(
+                self,
+                name: str,
+                children: list[object] | None = None,
+                template_content: object = None,
+            ) -> None:
+                self.name = name
+                self.namespace = "html"
+                self.children = children or []
+                self.attrs = {}
+                self.parent = None
+                self.template_content = template_content
+
+        # The subject itself is a template without a content fragment.
+        empty_template = DummyNode("template", template_content=None)
+        # A template encountered while scanning also tolerates missing content.
+        nested = DummyNode("template", template_content=None)
+        subject = DummyNode("div", children=[nested])
+        nested.parent = subject
+
+        matcher = SelectorMatcher()
+        assert not matcher.matches(empty_template, parse_selector("template:has(p)"))
+        assert not matcher.matches(subject, parse_selector("div:has(p)"))
+
+    def test_pseudo_without_parsed_argument_is_unmatched_or_rejected(self):
+        matcher = SelectorMatcher()
+        div = query(JustHTML("<div>x</div>", fragment=True).root, "div")[0]
+        missing_is = SimpleSelector(SimpleSelector.TYPE_PSEUDO, name="is")
+        missing_where = SimpleSelector(SimpleSelector.TYPE_PSEUDO, name="where")
+        missing_has = SimpleSelector(SimpleSelector.TYPE_PSEUDO, name="has")
+
+        assert not matcher._matches_pseudo(div, missing_is)
+        assert not matcher._matches_pseudo(div, missing_where)
+        assert not matcher._matches_pseudo(div, missing_has)
+        with self.assertRaisesRegex(SelectorError, "Unsupported pseudo-class"):
+            matcher._matches_pseudo(div, SimpleSelector(SimpleSelector.TYPE_PSEUDO, name="hover"))
 
     def test_selector_matcher_child_name_cache_helpers(self):
         matcher = SelectorMatcher()
@@ -2051,6 +2441,57 @@ class TestSelectorSecurity(SelectorTestCase):
         with self.assertRaisesRegex(SelectorError, "too deep"):
             query(self.get_simple_doc(), selector)
 
+    def test_deeply_nested_is_and_has_selectors_raise_selector_error(self):
+        is_selector = ":is(" * 150 + "span" + ")" * 150
+        has_selector = "div:has(" + ":is(" * 150 + "span" + ")" * 150 + ")"
+
+        with self.assertRaisesRegex(SelectorError, "too deep"):
+            query(self.get_simple_doc(), is_selector)
+        with self.assertRaisesRegex(SelectorError, "too deep"):
+            parse_selector(has_selector)
+
+    def test_forgiving_list_still_enforces_nesting_depth(self):
+        # A too-deep entry is a resource error, not an invalid entry to drop.
+        selector = ":is(a, " + ":is(" * 150 + "span" + ")" * 150 + ", b)"
+
+        with self.assertRaisesRegex(SelectorError, "too deep"):
+            parse_selector(selector)
+
+    def test_wide_functional_pseudo_lists_are_rejected(self):
+        with self.assertRaisesRegex(SelectorError, "too many entries"):
+            query(self.get_simple_doc(), ":is(" + ",".join(f"c{i}" for i in range(300)) + ")")
+
+        limits = SelectorLimits(max_list_items=4)
+        with self.assertRaisesRegex(SelectorError, "too many entries"):
+            parse_selector(":where(a, b, c, d, e, f)", limits=limits)
+        with self.assertRaisesRegex(SelectorError, "too many entries"):
+            parse_selector("div:has(a, b, c, d, e, f)", limits=limits)
+
+    def test_invalid_forgiving_entries_do_not_escape_list_caps(self):
+        # Valid entries are still capped even when invalid entries are dropped.
+        selector = ":is(" + ",".join([":bogus"] * 10 + ["a", "b", "c"]) + ")"
+        with self.assertRaisesRegex(SelectorError, "too many entries"):
+            parse_selector(selector, limits=SelectorLimits(max_list_items=2))
+
+    def test_relative_combinator_chain_in_has_is_capped(self):
+        chain = "a" + " > b" * 600
+        with self.assertRaisesRegex(SelectorError, "too many parts"):
+            parse_selector(f"div:has({chain})")
+
+    def test_has_subtree_scan_respects_match_step_budget(self):
+        doc = JustHTML("<div>" + "<a>x</a>" * 500 + "</div>").root
+
+        with self.assertRaisesRegex(SelectorError, "match budget"):
+            self.assert_query_within_budget(doc, "div:has(span)", max_match_steps=200)
+
+    def test_deeply_nested_has_match_enforces_match_depth(self):
+        doc = JustHTML("<div><a><b><em>x</em></b></a></div>").root
+        parsed = parse_selector("div:has(:is(:where(em)))")
+        matcher = SelectorMatcher(limits=SelectorLimits(max_match_depth=1))
+
+        with self.assertRaisesRegex(SelectorError, "too deep"):
+            matcher.matches(query(doc, "div")[0], parsed)
+
     def test_match_depth_limit_still_applies_to_direct_matcher_use(self):
         matcher = SelectorMatcher(limits=SelectorLimits(max_match_depth=0))
         div = query(JustHTML("<div></div>", fragment=True).root, "div")[0]
@@ -2058,6 +2499,18 @@ class TestSelectorSecurity(SelectorTestCase):
 
         with self.assertRaisesRegex(SelectorError, "too deep"):
             matcher._matches(div, selector, depth=1)
+
+    def test_relative_has_argument_enforces_match_depth(self):
+        parsed = parse_selector("div:has(> p)")
+        matcher = SelectorMatcher(limits=SelectorLimits(max_match_depth=0))
+        div = query(JustHTML("<div><p></p></div>", fragment=True).root, "div")[0]
+
+        with self.assertRaisesRegex(SelectorError, "too deep"):
+            matcher.matches(div, parsed)
+
+    def test_internal_parse_selector_enforces_parse_depth(self):
+        with self.assertRaisesRegex(SelectorError, "too deep"):
+            _parse_selector("div", limits=SelectorLimits(), parse_depth=101)
 
     def test_deeply_nested_not_selector_raises_before_parse_cache(self):
         _parse_selector_cached.cache_clear()

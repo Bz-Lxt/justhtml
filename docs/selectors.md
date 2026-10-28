@@ -122,16 +122,67 @@ doc.query(":root")      # The <html> element
 doc.query(":comment")   # Comment nodes
 ```
 
-### Negation
+### Functional pseudo-classes
 
 | Selector | Description |
 |----------|-------------|
-| `:not(selector)` | Elements not matching selector |
+| `:not(selector)` | Elements not matching the (strict) selector argument |
+| `:is(selector, ...)` | Elements matching any selector in the forgiving list |
+| `:where(selector, ...)` | Alias of `:is()` (specificity is not modeled) |
+| `:has(relative-selector)` | Elements whose relative subtree matches the argument |
+
+All four pseudo-classes can be nested and combined (`div:is(.a, .b):not(:has(p))`),
+and their arguments are parsed and matched by the same engine that powers
+`query()` and `matches()`, so selector behavior is identical in DOM queries,
+`matches()` checks, and transform targeting (`SetAttrs`, `Drop`, ...).
 
 ```python
-doc.query("div:not(.hidden)")     # Visible divs
-doc.query("input:not([disabled])")  # Enabled inputs
+doc.query("div:not(.hidden)")            # Visible divs
+doc.query(":is(h1, h2, h3)")             # Any heading
+doc.query("p:is(.intro, .special)")      # p with either class
+doc.query("div:has(p)")                  # Divs containing a paragraph
+doc.query("li:has(+ li)")                # List items followed by another item
+doc.query("div:is(.card, .panel):has(a)")  # Cards or panels containing a link
 ```
+
+#### Relative selector arguments
+
+Arguments may start with a combinator, which is resolved against the subject
+element:
+
+| Argument | Axis relative to the subject |
+|----------|-------------------------------|
+| `:has(> p)` | A `p` that is a direct child of the subject |
+| `:has(+ p)` | The immediately following element sibling is `p` |
+| `:has(~ p)` | A following element sibling is `p` |
+| `:has(p)` | A `p` anywhere in the subject's subtree (implied descendant) |
+| `:is(+ p)`, `:where(~ p)` | Same axes, testing the subject's siblings |
+
+Chains after the leading combinator are evaluated forward and stay inside the
+subject's axis; the argument never climbs back above the subject. The content
+fragment of `<template>` elements is searched as part of the subject subtree.
+
+```python
+doc.query("div:has(> p + span)")   # Div with a p child directly followed by span
+doc.query("h2:has(~ div em)")      # h2 with a later sibling div containing em
+```
+
+#### Forgiving vs. strict arguments
+
+`:is()` and `:where()` use a forgiving selector list: entries that fail to
+parse are skipped instead of invalidating the whole selector.
+
+```python
+doc.query(":is(p, :bogus, a)")  # Matches p and a; :bogus is ignored
+doc.query(":is()")              # Empty list matches nothing
+```
+
+`:not()` and `:has()` use strict selector lists, so an unsupported pseudo-class
+or malformed entry raises `SelectorError`. `:has()` also requires a non-empty
+argument. All arguments stay within the same resource limits as top-level
+selectors: nesting depth (`max_parse_depth` / `max_match_depth`), list entries
+(`max_list_items`), and combinator-chain length (`max_complex_selector_parts`).
+Resource-limit errors raised inside forgiving lists are never swallowed.
 
 ## Selector Groups
 

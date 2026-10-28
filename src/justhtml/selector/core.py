@@ -33,6 +33,11 @@ class SelectorLimits:
 
 DEFAULT_SELECTOR_LIMITS = SelectorLimits()
 
+# Raised when nested functional pseudo-classes exhaust the parse-depth budget.
+# Forgiving selector lists must still propagate this resource error instead of
+# treating it as an invalid entry.
+_NESTING_LIMIT_MESSAGE = "Selector nesting is too deep"
+
 
 # Token types for the CSS selector lexer
 class TokenType:
@@ -433,16 +438,46 @@ def _selector_signature(selector: Any) -> tuple[Any, ...] | None:
 # Type alias for parsed selectors
 ParsedSelector = ComplexSelector | SelectorList
 
+# Pseudo-classes understood by the matcher. Validating names at parse time lets
+# forgiving selector lists in :is()/:where() drop unsupported entries.
+_SUPPORTED_PSEUDO_CLASSES = frozenset(
+    {
+        "first-child",
+        "last-child",
+        "only-child",
+        "nth-child",
+        "first-of-type",
+        "last-of-type",
+        "only-of-type",
+        "nth-of-type",
+        "empty",
+        "root",
+        "not",
+        "is",
+        "where",
+        "has",
+        "contains",
+        "comment",
+    }
+)
+
+# Functional pseudo-classes whose argument is itself a selector (list).
+_SELECTOR_ARG_PSEUDOS = frozenset({"not", "is", "where", "has"})
+# :is()/:where() take forgiving selector lists: invalid entries are ignored
+# instead of invalidating the whole selector.
+_FORGIVING_SELECTOR_PSEUDOS = frozenset({"is", "where"})
+
 
 class SelectorParser:
     """Parses a list of tokens into a selector AST."""
 
-    __slots__ = ("limits", "parse_depth", "pos", "tokens")
+    __slots__ = ("allow_relative", "limits", "parse_depth", "pos", "tokens")
 
     limits: SelectorLimits
     tokens: list[Token]
     pos: int
     parse_depth: int
+    allow_relative: bool
 
     def __init__(
         self,
@@ -450,11 +485,15 @@ class SelectorParser:
         *,
         limits: SelectorLimits = DEFAULT_SELECTOR_LIMITS,
         parse_depth: int = 0,
+        allow_relative: bool = False,
     ) -> None:
         self.limits = limits
         self.tokens = tokens
         self.pos = 0
         self.parse_depth = parse_depth
+        # Relative selectors (a leading combinator) are only valid inside
+        # functional pseudo-class arguments such as :has().
+        self.allow_relative = allow_relative
 
     def _peek(self) -> Token:
         if self.pos < len(self.tokens):
@@ -503,15 +542,33 @@ class SelectorParser:
             return selectors[0]
         return SelectorList(selectors)
 
+    def parse_standalone_complex(self) -> ComplexSelector:
+        """Parse one complex selector followed by end of input."""
+        selector = self._parse_complex_selector()
+        if selector is None:
+            raise SelectorError("Empty selector")
+        if self._peek().type != TokenType.EOF:
+            raise SelectorError(f"Unexpected token: {self._peek()}")
+        return selector
+
     def _parse_complex_selector(self) -> ComplexSelector | None:
         """Parse a complex selector (compound selectors with combinators)."""
         complex_sel = ComplexSelector()
 
-        # First compound selector (no combinator)
+        # A relative selector links its first compound to the subject element
+        # through a leading combinator. Only functional pseudo arguments opt
+        # into this grammar.
+        leading_combinator: str | None = None
+        if self.allow_relative and self._peek().type == TokenType.COMBINATOR:
+            leading_combinator = self._advance().value
+
+        # First compound selector (no combinator unless relative)
         compound = self._parse_compound_selector()
         if not compound:
+            if leading_combinator is not None:
+                raise SelectorError("Expected selector after combinator")
             return None
-        complex_sel.parts.append((None, compound))
+        complex_sel.parts.append((leading_combinator, compound))
 
         # Parse combinator + compound selector pairs
         while self._peek().type == TokenType.COMBINATOR:
@@ -593,6 +650,8 @@ class SelectorParser:
         self._expect(TokenType.COLON)
         name = self._expect(TokenType.TAG).value
         name = name.lower() if name else name
+        if name not in _SUPPORTED_PSEUDO_CLASSES:
+            raise SelectorError(f"Unsupported pseudo-class: :{name}")
 
         # Functional pseudo-class
         if self._peek().type == TokenType.PAREN_OPEN:
@@ -601,10 +660,8 @@ class SelectorParser:
             if self._peek().type == TokenType.STRING:
                 arg = self._advance().value
             self._expect(TokenType.PAREN_CLOSE)
-            parsed_arg = (
-                _parse_selector(arg, limits=self.limits, parse_depth=self.parse_depth + 1)
-                if name == "not" and arg
-                else None
+            parsed_arg = _parse_functional_pseudo_arg(
+                name, arg, limits=self.limits, parse_depth=self.parse_depth
             )
             return SimpleSelector(SimpleSelector.TYPE_PSEUDO, name=name, arg=arg, parsed_arg=parsed_arg)
 
@@ -756,6 +813,183 @@ class SelectorMatcher:
     def _matches_compound(self, node: Any, compound: CompoundSelector, *, depth: int = 0) -> bool:
         """Match a compound selector (all simple selectors must match)."""
         return all(self._matches_simple(node, simple, depth=depth) for simple in compound.selectors)
+
+    def _matches_selector_arguments(
+        self,
+        node: Any,
+        selector: ParsedSelector,
+        *,
+        depth: int,
+        implicit_relative: bool,
+    ) -> bool:
+        """Match the parsed selector list used as a functional pseudo argument."""
+        complexes: list[ComplexSelector]
+        if isinstance(selector, SelectorList):
+            complexes = selector.selectors
+        else:
+            complexes = [selector]
+        for complex_selector in complexes:
+            if self._matches_argument(
+                node,
+                complex_selector,
+                depth=depth,
+                implicit_relative=implicit_relative,
+            ):
+                return True
+        return False
+
+    def _matches_argument(
+        self,
+        node: Any,
+        selector: ComplexSelector,
+        *,
+        depth: int,
+        implicit_relative: bool,
+    ) -> bool:
+        leading_combinator = selector.parts[0][0]
+        if leading_combinator is None and not implicit_relative:
+            # Route through _matches so the nesting-depth guard and step
+            # accounting also apply to functional pseudo arguments.
+            return self._matches(node, selector, depth=depth)
+        if depth > self._context.limits.max_match_depth:
+            raise SelectorError(_NESTING_LIMIT_MESSAGE)
+        return self._matches_relative(node, selector, depth=depth)
+
+    def _matches_relative(self, node: Any, selector: ComplexSelector, *, depth: int) -> bool:
+        """Evaluate a relative selector with ``node`` as the subject.
+
+        The leading combinator fixes the axis of the first compound relative
+        to the subject; an absent combinator means descendant. The remaining
+        chain is evaluated forward, keeping every compound inside the
+        subject's relative subtree.
+        """
+        parts = selector.parts
+        leading_combinator = parts[0][0]
+
+        if leading_combinator == ">":
+            for child in self._get_element_children(node):
+                self._context.tick()
+                if self._matches_forward(child, parts, 0, depth=depth):
+                    return True
+            return False
+
+        if leading_combinator == "+":
+            sibling = self._next_element_sibling(node)
+            return sibling is not None and self._matches_forward(sibling, parts, 0, depth=depth)
+
+        if leading_combinator == "~":
+            for sibling in self._following_element_siblings(node):
+                self._context.tick()
+                if self._matches_forward(sibling, parts, 0, depth=depth):
+                    return True
+            return False
+
+        return self._relative_descendants_match(node, parts, 0, depth=depth)
+
+    def _matches_forward(
+        self,
+        node: Any,
+        parts: list[tuple[str | None, CompoundSelector]],
+        index: int,
+        *,
+        depth: int,
+    ) -> bool:
+        """Match ``parts[index:]`` with ``node`` fixed as its left end."""
+        if not self._matches_compound(node, parts[index][1], depth=depth):
+            return False
+        if index == len(parts) - 1:
+            return True
+
+        combinator = parts[index + 1][0]
+
+        if combinator == ">":
+            for child in self._get_element_children(node):
+                self._context.tick()
+                if self._matches_forward(child, parts, index + 1, depth=depth):
+                    return True
+            return False
+
+        if combinator == "+":
+            sibling = self._next_element_sibling(node)
+            return sibling is not None and self._matches_forward(
+                sibling, parts, index + 1, depth=depth
+            )
+
+        if combinator == "~":
+            for sibling in self._following_element_siblings(node):
+                self._context.tick()
+                if self._matches_forward(sibling, parts, index + 1, depth=depth):
+                    return True
+            return False
+
+        return self._relative_descendants_match(node, parts, index + 1, depth=depth)
+
+    def _relative_descendants_match(
+        self,
+        node: Any,
+        parts: list[tuple[str | None, CompoundSelector]],
+        index: int,
+        *,
+        depth: int,
+    ) -> bool:
+        """Search descendants of ``node`` for a forward match of ``parts[index:]``."""
+        target_allows_non_elements = _selector_allows_non_elements(parts[index][1])
+        stack: list[Any] = []
+        root_children = node.children
+        if root_children:
+            stack.extend(reversed(root_children))
+        if node.name == "template" and node.namespace == "html":
+            template_content = getattr(node, "template_content", None)
+            if template_content:
+                stack.append(template_content)
+        visited: set[int] = {id(node)}
+
+        while stack:
+            self._context.tick()
+            current = stack.pop()
+            current_key = id(current)
+            if current_key in visited:
+                continue
+            visited.add(current_key)
+
+            name = current.name
+            is_candidate = (
+                target_allows_non_elements
+                or (not name.startswith("#") and name != "!doctype")
+            )
+            if is_candidate and self._matches_forward(current, parts, index, depth=depth):
+                return True
+
+            children = current.children
+            if children:
+                stack.extend(reversed(children))
+            if name == "template" and current.namespace == "html":
+                template_content = current.template_content
+                if template_content:
+                    stack.append(template_content)
+        return False
+
+    def _next_element_sibling(self, node: Any) -> Any | None:
+        """Return the element sibling immediately following ``node``."""
+        parent = node.parent
+        if not parent:
+            return None
+        data = self._parent_data(parent)
+        index = data.element_index.get(id(node))
+        if index is None or index >= len(data.element_children):
+            return None
+        return data.element_children[index]
+
+    def _following_element_siblings(self, node: Any) -> list[Any]:
+        """Return element siblings following ``node`` (excluding ``node``)."""
+        parent = node.parent
+        if not parent:
+            return []
+        data = self._parent_data(parent)
+        index = data.element_index.get(id(node))
+        if index is None:
+            return []
+        return data.element_children[index:]
 
     def _matches_simple(self, node: Any, selector: SimpleSelector, *, depth: int = 0) -> bool:
         """Match a simple selector against a node."""
@@ -915,7 +1149,29 @@ class SelectorMatcher:
             if not selector.arg:
                 return True
             inner = selector.parsed_arg or parse_selector(selector.arg)
-            return not self._matches(node, inner, depth=depth + 1)
+            return not self._matches_selector_arguments(
+                node, inner, depth=depth + 1, implicit_relative=False
+            )
+
+        if name in ("is", "where"):
+            # An empty forgiving list matches nothing; a parsed list matches
+            # when any entry matches the subject.
+            inner = selector.parsed_arg
+            if inner is None:
+                return False
+            return self._matches_selector_arguments(
+                node, inner, depth=depth + 1, implicit_relative=False
+            )
+
+        if name == "has":
+            inner = selector.parsed_arg
+            if inner is None:
+                return False
+            # :has() arguments without a leading combinator are relative
+            # selectors with an implied descendant combinator.
+            return self._matches_selector_arguments(
+                node, inner, depth=depth + 1, implicit_relative=True
+            )
 
         if name == "only-child":
             return self._is_first_child(node) and self._is_last_child(node)
@@ -1088,6 +1344,17 @@ class SelectorMatcher:
         return self._parent_data(parent).element_child_names
 
     def _closest_matching_ancestor(self, node: Any, compound: CompoundSelector, *, depth: int) -> Any | None:
+        # The caller has already matched the rightmost compound on ``node``,
+        # so the search starts strictly above it but uses an inclusive cache.
+        parent = node.parent
+        if parent is None:
+            return None
+        return self._closest_matching_inclusive(parent, compound, depth=depth)
+
+    def _closest_matching_inclusive(
+        self, node: Any, compound: CompoundSelector, *, depth: int
+    ) -> Any | None:
+        """Return the first node matching ``compound`` at or above ``node``."""
         cache_key = (id(compound), depth)
         cached = self._context.ancestor_match_cache.get(cache_key)
         if cached is None:
@@ -1099,25 +1366,28 @@ class SelectorMatcher:
             return cached[node_key]
 
         path: list[Any] = []
-        visited: set[int] = {id(node)}
-        ancestor = node.parent
+        visited: set[int] = set()
+        current: Any = node
         found: Any | None = None
-        while ancestor:
-            self._context.tick()
-            ancestor_key = id(ancestor)
-            if ancestor_key in visited:
+        while current is not None:
+            current_key = id(current)
+            if current_key in visited:
                 break
-            visited.add(ancestor_key)
-            if ancestor_key in cached:
-                found = cached[ancestor_key]
+            visited.add(current_key)
+            if current_key in cached:
+                found = cached[current_key]
                 break
-            if self._matches_compound(ancestor, compound, depth=depth):
-                found = ancestor
+            # The compound evaluation below meters its own work (every simple
+            # selector consumes match budget); cache/visited probes are O(1)
+            # dict lookups and must not charge an additional walk step, or deep
+            # non-matching chains pay twice per node.
+            if self._matches_compound(current, compound, depth=depth):
+                found = current
                 break
-            path.append(ancestor)
-            ancestor = ancestor.parent
+            path.append(current)
+            current = current.parent
 
-        cached[node_key] = found
+        # Every node on the failed path has the same answer at/above it.
         for path_node in path:
             cached[id(path_node)] = found
         return found
@@ -1355,13 +1625,126 @@ def _parse_selector(
     *,
     limits: SelectorLimits = DEFAULT_SELECTOR_LIMITS,
     parse_depth: int,
+    allow_relative: bool = False,
 ) -> ParsedSelector:
     if parse_depth > limits.max_parse_depth:
-        raise SelectorError("Selector nesting is too deep")
+        raise SelectorError(_NESTING_LIMIT_MESSAGE)
     tokenizer = SelectorTokenizer(selector_string)
     tokens = tokenizer.tokenize()
-    parser = SelectorParser(tokens, limits=limits, parse_depth=parse_depth)
+    parser = SelectorParser(
+        tokens, limits=limits, parse_depth=parse_depth, allow_relative=allow_relative
+    )
     return parser.parse()
+
+
+def _parse_functional_pseudo_arg(
+    name: str | None,
+    arg: str | None,
+    *,
+    limits: SelectorLimits,
+    parse_depth: int,
+) -> ParsedSelector | None:
+    """Parse the selector argument of :not(), :is(), :where() or :has().
+
+    :is() and :where() use a forgiving selector list, so invalid entries are
+    dropped instead of invalidating the surrounding selector. :not() and
+    :has() use strict lists. All four accept relative selectors whose leading
+    combinator is resolved against the subject element.
+    """
+    if name not in _SELECTOR_ARG_PSEUDOS:
+        return None
+    nested_depth = parse_depth + 1
+    if nested_depth > limits.max_parse_depth:
+        raise SelectorError(_NESTING_LIMIT_MESSAGE)
+    if not arg:
+        # :not() keeps its historical permissive behavior; :is()/:where() with
+        # an empty list match nothing; :has() requires a selector argument.
+        if name == "not":
+            return None
+        if name in _FORGIVING_SELECTOR_PSEUDOS:
+            return SelectorList([])
+        raise SelectorError(f":{name}() requires a selector argument")
+    if name in _FORGIVING_SELECTOR_PSEUDOS:
+        return _parse_forgiving_selector_list(arg, limits=limits, parse_depth=nested_depth)
+    return _parse_selector(
+        arg, limits=limits, parse_depth=nested_depth, allow_relative=True
+    )
+
+
+def _split_forgiving_entries(selector_string: str) -> list[str]:
+    """Split a forgiving selector argument on top-level commas.
+
+    Commas inside ``()``, ``[]`` or quoted strings do not separate entries, so
+    a tokenizer failure in one entry cannot poison the shared token stream.
+    """
+    entries: list[str] = []
+    start = 0
+    paren_depth = 0
+    bracket_depth = 0
+    quote: str | None = None
+    escaped = False
+    for pos, ch in enumerate(selector_string):
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == quote:
+                quote = None
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+        elif ch == "(":
+            paren_depth += 1
+        elif ch == ")":
+            paren_depth = max(0, paren_depth - 1)
+        elif ch == "[":
+            bracket_depth += 1
+        elif ch == "]":
+            bracket_depth = max(0, bracket_depth - 1)
+        elif ch == "," and paren_depth == 0 and bracket_depth == 0:
+            entries.append(selector_string[start:pos])
+            start = pos + 1
+    entries.append(selector_string[start:])
+    return entries
+
+
+def _parse_forgiving_selector_list(
+    selector_string: str,
+    *,
+    limits: SelectorLimits,
+    parse_depth: int,
+) -> SelectorList:
+    """Parse a forgiving selector list, skipping entries that fail to parse."""
+    selectors: list[ComplexSelector] = []
+    seen_signatures: set[tuple[Any, ...]] = set()
+    for raw_entry in _split_forgiving_entries(selector_string):
+        entry = raw_entry.strip()
+        if not entry:
+            continue
+        try:
+            tokens = SelectorTokenizer(entry).tokenize()
+            parser = SelectorParser(
+                tokens,
+                limits=limits,
+                parse_depth=parse_depth,
+                allow_relative=True,
+            )
+            selector = parser.parse_standalone_complex()
+        except SelectorError as exc:
+            # Resource-limit errors protect callers from adversarial input;
+            # only malformed entries are forgiven.
+            if exc.args and exc.args[0] == _NESTING_LIMIT_MESSAGE:
+                raise
+            continue
+        selector_sig = _complex_selector_signature(selector)
+        if selector_sig in seen_signatures:
+            continue
+        if len(seen_signatures) >= limits.max_list_items:
+            raise SelectorError("Selector list has too many entries")
+        seen_signatures.add(selector_sig)
+        selectors.append(selector)
+    return SelectorList(selectors)
 
 
 def _is_simple_tag_selector(selector: str) -> bool:
@@ -1387,7 +1770,15 @@ def _selector_allows_non_elements(selector: ParsedSelector | CompoundSelector | 
     if isinstance(selector, SimpleSelector):
         if selector.type != SimpleSelector.TYPE_PSEUDO:
             return False
-        return selector.name == "comment"
+        if selector.name == "comment":
+            return True
+        # :is()/:where() keep the subject node type, so a :comment nested in
+        # their argument still permits non-element candidates. :has() keeps an
+        # element subject even when its argument matches non-element
+        # descendants; :not() preserves its historical element-only traversal.
+        if selector.name in ("is", "where") and selector.parsed_arg is not None:
+            return _selector_allows_non_elements(selector.parsed_arg)
+        return False
     return False
 
 

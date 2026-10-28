@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Support composable, nestable `:is()`, `:where()`, and relational `:has()` pseudo-classes in selectors. Functional pseudo-class arguments accept relative selectors with leading combinators (`>`, `+`, `~`, and implied descendant), evaluated forward within the subject's axis. The shared parser and matcher give identical behavior in DOM queries, `matches()`, and transform targeting (`SetAttrs`, `Drop`, ...). `:is()`/`:where()` use forgiving selector lists that drop invalid entries, while `:not()`/`:has()` keep strict lists; all argument forms remain bounded by the existing parse-depth, list-size, chain-length, match-depth, and match-step limits.
+
+### Fixed
+
+- Fix descendant selectors missing matches in nested same-tag structures (e.g. `div div` inside nested `<div>` elements), caused by the negative ancestor-match cache being reused with inclusive semantics while walking inner candidates.
+
 ## [3.13.1] - 2026-10-12
 
 ### Fixed
